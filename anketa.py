@@ -228,7 +228,7 @@ async def safe_send_message(bot, chat_id, text, parse_mode="Markdown"):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Assalomu alaykum! Ishga qabul qilish anketasiga xush kelibsiz.\n\n"
-        "Iltimos, anketaga biriktirish uchun o'zingizning rasmingizni yuboring (yoki matn yozib o'tkazib yuboring):"
+        "Iltimos, anketaga biriktirish uchun o'zingizning rasmingizni yuboring:"
     )
     return PHOTO
 
@@ -254,7 +254,7 @@ async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data['photo'] = None
 
-    await update.message.reply_text("Qaysi bo'lim va lavozimga topshiryapsiz?\n(Masalan: *Sotuv bo'limi - Menejer*)", parse_mode="Markdown")
+    await update.message.reply_text("Qaysi bo'lim va lavozimga topshiryapsiz?\n(Masalan: *Instagramga,telegramga video olish va unga javob berish bo'yichami?, Sotuv bo'limigami?, Agentlik bo'yichami?*)", parse_mode="Markdown")
     return POSITION
 
 
@@ -265,7 +265,7 @@ async def get_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await process_text_step(update, context, FULL_NAME, 'fullname', "Tug'ilgan sanangiz (Masalan: 15.05.1998):", BIRTH_DATE)
 
 async def get_birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await process_text_step(update, context, BIRTH_DATE, 'birthdate', "Millatingiz (Masalan: O'zbek, Rus):", NATIONALITY)
+    return await process_text_step(update, context, BIRTH_DATE, 'birthdate', "Millatingiz (Masalan:O'zbek, Rus, Qozoq):", NATIONALITY)
 
 async def get_nationality(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await process_text_step(update, context, NATIONALITY, 'nationality', "Tug'ilgan joyingiz (davlat, viloyat, tuman, shahar/qishloq):", BIRTH_PLACE)
