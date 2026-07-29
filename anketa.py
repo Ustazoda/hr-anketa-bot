@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import re
 from aiohttp import web
 from google import genai
 from google.genai import types
@@ -126,18 +127,26 @@ Faqat JSON formatida javob bering:
 
     try:
         response = call_gemini_with_fallback(prompt, VALIDATION_MODELS)
-        text = response.text.strip().replace("```json", "").replace("```", "").strip()
-        result = json.loads(text)
-        return result if "valid" in result else {"valid": True, "reason": ""}
+        text = response.text.strip()
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        return {"valid": True, "reason": ""}
     except Exception as e:
         logging.error(f"Validatsiyada xatolik: {e}")
         return {"valid": True, "reason": ""}
 
 
 async def validate_photo(photo_bytes: bytes) -> dict:
-    prompt = """Bu rasmda aniq bitta odamning yuzi ko'rinib turibdimi (portret yoki selfie)?
-Faqat JSON formatida javob bering:
-{"is_person": true yoki false, "reason": "qisqa sabab, o'zbek tilida"}"""
+    prompt = """Siz fotosuratlarni tahlil qiluvchi mutaxassisiz.
+Ushbu rasmni ko'rib chiqing. Bu rasmda haqiqiy INSON YUZI (portret, selfie yoki inson qiyofasi) ko'rinib turibdimi?
+
+QOIDALAR:
+1. Mashina, avtomobil, tabiat manzarasi, buyumlar, hujjat, hayvonlar -> "is_person": false
+2. Inson yuzi aniq ko'ringan bo'lsa -> "is_person": true
+
+FAQAT ushbu JSON formatida javob bering, boshqa hech narsa yozmang:
+{"is_person": false, "reason": "Rasmda inson yuzi yo'q, avtomobil va manzara tasvirlangan."}"""
 
     try:
         contents = [
@@ -145,12 +154,20 @@ Faqat JSON formatida javob bering:
             prompt,
         ]
         response = call_gemini_with_fallback(contents, VALIDATION_MODELS)
-        text = response.text.strip().replace("```json", "").replace("```", "").strip()
-        result = json.loads(text)
-        return result if "is_person" in result else {"is_person": True, "reason": ""}
+        text = response.text.strip()
+        
+        # JSON obyektini aniq ajratib olish (Regex yordamida)
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            result = json.loads(match.group(0))
+            logging.info(f"Rasm validatsiyasi natijasi: {result}")
+            return result
+        else:
+            return {"is_person": False, "reason": "Rasmda inson yuzi aniqlanmadi."}
+
     except Exception as e:
         logging.error(f"Rasm validatsiyasida xatolik: {e}")
-        return {"is_person": True, "reason": ""}
+        return {"is_person": False, "reason": "Rasmda inson yuzi aniqlanmadi. Iltimos, o'zingizning aniq suratingizni yuboring."}
 
 
 async def analyze_candidate_with_ai(user_data: dict) -> str:
@@ -225,7 +242,6 @@ async def safe_send_message(bot, chat_id, text, parse_mode="Markdown", reply_mar
 # ==================== TUGMALAR VA QAROR QABUL QILISH ====================
 
 async def handle_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin Qabul qilish yoki Rad etish tugmasini bosganda ishlaydi."""
     query = update.callback_query
     await query.answer()
 
@@ -247,10 +263,8 @@ async def handle_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         return
 
-    # Admindagi tugmani holatini o'zgartirish
     await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
 
-    # Nomzodning o'ziga xabar yuborish
     try:
         await context.bot.send_message(chat_id=int(user_id), text=user_msg, parse_mode="Markdown")
     except Exception as e:
@@ -268,14 +282,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Agar foydalanuvchi rasm emas, oddiy matn yuborsa:
     if not update.message.photo:
         await update.message.reply_text(
-            "⚠️ Rasm yuborish majburiy! Iltimos, faqat rasm yuboring."
+            "⚠️ Rasm yuborish majburiy! Iltimos, faqat o'zingizning rasmingizni yuboring."
         )
         return PHOTO
 
-    # Agar rasm yuborsa, uni tekshirish:
     photo_file = await update.message.photo[-1].get_file()
     photo_bytes = await photo_file.download_as_bytearray()
 
@@ -287,14 +299,13 @@ async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    if not result.get("is_person", True):
+    if not result.get("is_person", False):
         await update.message.reply_text(
-            f"❌ {result.get('reason', 'Bu rasm mos emas.')}\n\n"
+            f"❌ {result.get('reason', 'Bu rasmda inson yuzi ko\'rinmayapti.')}\n\n"
             "Iltimos, yuzingiz aniq ko'ringan haqiqiy suratingizni yuboring:"
         )
         return PHOTO
 
-    # Rasm yaroqli bo'lsa saqlash va keyingi bosqichga o'tish
     context.user_data['photo'] = update.message.photo[-1].file_id
 
     await update.message.reply_text(
@@ -455,7 +466,7 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADDITIONAL
 
     context.user_data['additional'] = answer
-    user_id = update.message.from_user.id  # Nomzodning shaxsiy Telegram ID si
+    user_id = update.message.from_user.id
 
     await update.message.reply_text(
         "Rahmat! Anketangiz qabul qilindi. Sun'iy intellekt ma'lumotlaringizni tahlil qilmoqda...",
@@ -519,7 +530,6 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{ai_analysis}"
     )
 
-    # Qabul qilish va Rad etish tugmalari (Tugmaga nomzodning user_id si biriktiriladi)
     decision_keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ Qabul qilish", callback_data=f"accept_{user_id}"),
@@ -598,8 +608,6 @@ def main():
     )
 
     app.add_handler(conv_handler)
-    
-    # CallbackHandler: Qabul qilish / Rad etish tugmalarini ushlab olish uchun
     app.add_handler(CallbackQueryHandler(handle_decision))
 
     print("Mukammal ANKETA boti va Gemini AI ishga tushdi...")
