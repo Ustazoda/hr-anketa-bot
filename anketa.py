@@ -22,8 +22,6 @@ logging.basicConfig(
 BOT_TOKEN = "7634467401:AAGBpV1MoC0qzeo1_8OS0bXcc6NZ3_uQubI"  # BotFather Token
 ADMIN_ID = 1168952611  # Telegram ID
 
-# To'lov qilingan va to'g'ri API kalitingiz ulandi:
-GEMINI_API_KEY = "AQ.Ab8RN6IYEvXJwxdctmuwXFGtVLJNIzMCmIuZC4W_bx5_MCd08Q"
 
 # Yangi Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
