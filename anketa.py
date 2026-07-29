@@ -24,15 +24,17 @@ logging.basicConfig(
 
 # === SOZLAMALAR (Environment Variables orqali olinadi) ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7634467401:AAGBpV1MoC0qzeo1_8OS0bXcc6NZ3_uQubI")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "766309793")) # Ishxona direktori Telegram ID
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1168952611")) # Ishxona direktori Telegram ID
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6JkjZiuTERgf4YHBT4EKeu4w2g8P1PGQu8OnIKq2F4MuA")
 
 # Yangi Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Faol va ishlaydigan Gemini modellar
-VALIDATION_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash']
-ANALYSIS_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash']
+# Validatsiya (savol-javob va rasmni tekshirish) uchun birinchi navbatda 'lite' model ishlatiladi:
+VALIDATION_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-2.5-flash']
+
+# Chuqur HR tahlili uchun esa kuchliroq 'flash' modeli birinchi navbatda ishlaydi:
+ANALYSIS_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash']
 
 
 def call_gemini_with_fallback(contents, models):
