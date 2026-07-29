@@ -30,9 +30,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Yangi Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Faol va ishlaydigan Gemini modellar
-VALIDATION_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro']
-ANALYSIS_MODELS = ['gemini-1.5-pro', 'gemini-1.5-flash']
+VALIDATION_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-1.5-flash', 'gemini-1.5-pro','gemini-1.0-pro']
+ANALYSIS_MODELS = ['gemini-1.5-pro', 'gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-3.5-flash-lite', 'gemini-1.5-flash','gemini-1.0-pro']
 
 
 def call_gemini_with_fallback(contents, models):
