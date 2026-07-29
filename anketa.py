@@ -50,10 +50,11 @@ def call_gemini_with_fallback(contents, models):
 # === RENDER PORTI UCHUN DUMMY SERVER ===
 async def start_dummy_server():
     async def handle_ping(request):
-        return web.Response(text="HR Anketa Bot is running on Render!")
+        return web.Response(text="HR Anketa Bot is running on Render!", status=200)
 
     app = web.Application()
-    app.router.add_get("/", handle_ping)  # aiohttp HEAD so'rovini o'zi tushunadi
+    # '*' barcha so'rov turlarini (GET, HEAD va h.k.) qabul qiladi
+    app.router.add_route("*", "/", handle_ping) 
     
     runner = web.AppRunner(app)
     await runner.setup()
