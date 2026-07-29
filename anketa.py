@@ -29,8 +29,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Faol va ishlaydigan Gemini 3.6 Flash modellar
-VALIDATION_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite']
-ANALYSIS_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite']
+VALIDATION_MODELS = ['gemini-3.1-pro-preview', 'gemini-3.1-pro-preview']
+ANALYSIS_MODELS = ['gemini-3.1-pro-preview', 'gemini-3.1-pro-preview']
 
 
 def call_gemini_with_fallback(contents, models):
