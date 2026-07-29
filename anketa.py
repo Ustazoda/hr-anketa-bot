@@ -30,7 +30,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Yangi Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Faol va ishlaydigan Gemini modellar (100% ishonchli modellar)
+# Faol va ishlaydigan Gemini modellar
 VALIDATION_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro']
 ANALYSIS_MODELS = ['gemini-1.5-pro', 'gemini-1.5-flash']
 
@@ -143,10 +143,10 @@ Ushbu rasmni ko'rib chiqing. Bu rasmda haqiqiy INSON YUZI (portret, selfie yoki 
 
 QOIDALAR:
 1. Mashina, avtomobil, tabiat manzarasi, buyumlar, hujjat, hayvonlar -> "is_person": false
-2. Inson yuzi aniq ko'ringan bo'lsa -> "is_person": true
+2. Inson yuzi yoki qiyofasi ko'ringan bo'lsa -> "is_person": true
 
-FAQAT ushbu JSON formatida javob bering, boshqa hech narsa yozmang:
-{"is_person": false, "reason": "Rasmda inson yuzi yo'q, avtomobil va manzara tasvirlangan."}"""
+FAQAT ushbu JSON formatida javob bering:
+{"is_person": true, "reason": "Rasmda inson yuzi ko'rinib turibdi."}"""
 
     try:
         contents = [
@@ -154,20 +154,32 @@ FAQAT ushbu JSON formatida javob bering, boshqa hech narsa yozmang:
             prompt,
         ]
         response = call_gemini_with_fallback(contents, VALIDATION_MODELS)
-        text = response.text.strip()
-        
-        # JSON obyektini aniq ajratib olish (Regex yordamida)
+        text = response.text.strip().lower()
+        logging.info(f"AI Rasm javobi: {text}")
+
+        # 1. JSON parsing urinishi
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
-            result = json.loads(match.group(0))
-            logging.info(f"Rasm validatsiyasi natijasi: {result}")
-            return result
-        else:
-            return {"is_person": False, "reason": "Rasmda inson yuzi aniqlanmadi."}
+            try:
+                result = json.loads(match.group(0))
+                if "is_person" in result:
+                    return result
+            except Exception:
+                pass
+
+        # 2. Agar AI JSON o'rniga oddiy matnda javob bersa (Aql bilan matnni tahlil qilish)
+        if "true" in text or "ha" in text or "inson" in text or "odam" in text or "yuzi" in text:
+            return {"is_person": True, "reason": "Rasmda inson ko'rinib turibdi."}
+        elif "false" in text or "yo'q" in text or "mashina" in text or "avtomobil" in text:
+            return {"is_person": False, "reason": "Rasmda inson yuzi yo'q, avtomobil tasvirlangan."}
+
+        # Agar shubhali bo'lsa, inson deb qabul qiladi
+        return {"is_person": True, "reason": ""}
 
     except Exception as e:
         logging.error(f"Rasm validatsiyasida xatolik: {e}")
-        return {"is_person": False, "reason": "Rasmda inson yuzi aniqlanmadi. Iltimos, o'zingizning aniq suratingizni yuboring."}
+        # AI ishlamay qolsa, nomzodni asabsizlantirmaslik uchun rasmga ruxsat beradi
+        return {"is_person": True, "reason": ""}
 
 
 async def analyze_candidate_with_ai(user_data: dict) -> str:
@@ -299,7 +311,7 @@ async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    if not result.get("is_person", False):
+    if not result.get("is_person", True):
         await update.message.reply_text(
             f"❌ {result.get('reason', 'Bu rasmda inson yuzi ko\'rinmayapti.')}\n\n"
             "Iltimos, yuzingiz aniq ko'ringan haqiqiy suratingizni yuboring:"
