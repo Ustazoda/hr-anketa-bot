@@ -4,11 +4,12 @@ import json
 from aiohttp import web
 from google import genai
 from google.genai import types
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, BotCommand
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     ConversationHandler,
     filters,
@@ -28,9 +29,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Yangi Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Faol va ishlaydigan Gemini modellar
-VALIDATION_MODELS = ['gemini-3.5-flash-lite']
-ANALYSIS_MODELS = ['gemini-3.5-flash-lite']
+# Faol va ishlaydigan Gemini modellar (100% ishonchli modellar)
+VALIDATION_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro']
+ANALYSIS_MODELS = ['gemini-1.5-pro', 'gemini-1.5-flash']
 
 
 def call_gemini_with_fallback(contents, models):
@@ -46,7 +47,7 @@ def call_gemini_with_fallback(contents, models):
     raise last_error
 
 
-# === RENDER PORTI UCHUN DUMMY SERVER (Render 'Live' deyishi uchun SHART) ===
+# === RENDER PORTI UCHUN DUMMY SERVER ===
 async def start_dummy_server():
     async def handle_ping(request):
         return web.Response(text="HR Anketa Bot is running on Render!")
@@ -214,11 +215,46 @@ async def process_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     return next_state
 
 
-async def safe_send_message(bot, chat_id, text, parse_mode="Markdown"):
+async def safe_send_message(bot, chat_id, text, parse_mode="Markdown", reply_markup=None):
     try:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
     except Exception:
-        await bot.send_message(chat_id=chat_id, text=text)
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+
+
+# ==================== TUGMALAR VA QAROR QABUL QILISH ====================
+
+async def handle_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin Qabul qilish yoki Rad etish tugmasini bosganda ishlaydi."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    if data == "done":
+        return
+
+    try:
+        action, user_id = data.split("_")
+    except ValueError:
+        return
+
+    if action == "accept":
+        new_keyboard = [[InlineKeyboardButton("🟢 QABUL QILINGAN ✅", callback_data="done")]]
+        user_msg = "🎉 *Tabriklaymiz!*\n\nSizning anketangiz rahbariyat tomonidan ijobiy baholandi va keyingi bosqichga (yoki suhbatga) qabul qilindingiz. Tez orada siz bilan bog'lanamiz!"
+    elif action == "reject":
+        new_keyboard = [[InlineKeyboardButton("🔴 RAD ETILDI ❌", callback_data="done")]]
+        user_msg = "Assalomu alaykum.\n\nAfsuski, sizning anketangiz hozirgi vaqtda bizning talablarimizga mos kelmadi. Anketani to'ldirganingiz uchun rahmat, kelgusi ishlaringizda omad tilaymiz!"
+    else:
+        return
+
+    # Admindagi tugmani holatini o'zgartirish
+    await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
+
+    # Nomzodning o'ziga xabar yuborish
+    try:
+        await context.bot.send_message(chat_id=int(user_id), text=user_msg, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Nomzodga qarorni yuborishda xatolik: {e}")
 
 
 # ==================== HANDLERS ====================
@@ -226,33 +262,45 @@ async def safe_send_message(bot, chat_id, text, parse_mode="Markdown"):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Assalomu alaykum! Ishga qabul qilish anketasiga xush kelibsiz.\n\n"
-        "Iltimos, anketaga biriktirish uchun o'zingizning rasmingizni yuboring (yoki matn yozib o'tkazib yuboring):"
+        "📸 Iltimos, anketaga biriktirish uchun o'zingizning rasmingizni yuboring:"
     )
     return PHOTO
 
 
 async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.photo:
-        photo_file = await update.message.photo[-1].get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
+    # Agar foydalanuvchi rasm emas, oddiy matn yuborsa:
+    if not update.message.photo:
+        await update.message.reply_text(
+            "⚠️ Rasm yuborish majburiy! Iltimos, faqat rasm yuboring."
+        )
+        return PHOTO
 
-        checking_msg = await update.message.reply_text("⏳ Rasmingiz tekshirilmoqda...")
-        result = await validate_photo(photo_bytes)
+    # Agar rasm yuborsa, uni tekshirish:
+    photo_file = await update.message.photo[-1].get_file()
+    photo_bytes = await photo_file.download_as_bytearray()
 
-        try:
-            await checking_msg.delete()
-        except Exception:
-            pass
+    checking_msg = await update.message.reply_text("⏳ Rasmingiz tekshirilmoqda...")
+    result = await validate_photo(photo_bytes)
 
-        if not result.get("is_person", True):
-            await update.message.reply_text(f"❌ {result.get('reason', 'Bu rasm mos emas.')}\n\nIltimos, yuzingiz aniq ko'ringan haqiqiy suratingizni yuboring:")
-            return PHOTO
+    try:
+        await checking_msg.delete()
+    except Exception:
+        pass
 
-        context.user_data['photo'] = update.message.photo[-1].file_id
-    else:
-        context.user_data['photo'] = None
+    if not result.get("is_person", True):
+        await update.message.reply_text(
+            f"❌ {result.get('reason', 'Bu rasm mos emas.')}\n\n"
+            "Iltimos, yuzingiz aniq ko'ringan haqiqiy suratingizni yuboring:"
+        )
+        return PHOTO
 
-    await update.message.reply_text("Qaysi bo'lim va lavozimga topshiryapsiz?\n(Masalan: *Sotuv bo'limi - Menejer*)", parse_mode="Markdown")
+    # Rasm yaroqli bo'lsa saqlash va keyingi bosqichga o'tish
+    context.user_data['photo'] = update.message.photo[-1].file_id
+
+    await update.message.reply_text(
+        "Qaysi bo'lim va lavozimga topshiryapsiz?\n(Masalan: *Sotuv bo'limi - Menejer*)", 
+        parse_mode="Markdown"
+    )
     return POSITION
 
 
@@ -407,6 +455,7 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADDITIONAL
 
     context.user_data['additional'] = answer
+    user_id = update.message.from_user.id  # Nomzodning shaxsiy Telegram ID si
 
     await update.message.reply_text(
         "Rahmat! Anketangiz qabul qilindi. Sun'iy intellekt ma'lumotlaringizni tahlil qilmoqda...",
@@ -470,6 +519,14 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{ai_analysis}"
     )
 
+    # Qabul qilish va Rad etish tugmalari (Tugmaga nomzodning user_id si biriktiriladi)
+    decision_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Qabul qilish", callback_data=f"accept_{user_id}"),
+            InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_{user_id}")
+        ]
+    ])
+
     try:
         photo = context.user_data.get('photo')
         if photo:
@@ -481,7 +538,7 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         await safe_send_message(context.bot, ADMIN_ID, summary_text)
-        await safe_send_message(context.bot, ADMIN_ID, ai_report_text)
+        await safe_send_message(context.bot, ADMIN_ID, ai_report_text, reply_markup=decision_keyboard)
 
     except Exception as e:
         logging.error(f"Adminga yuborishda xatolik: {e}")
@@ -500,7 +557,7 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            PHOTO: [MessageHandler(filters.PHOTO, get_photo), CommandHandler("skip", get_photo), MessageHandler(filters.TEXT & ~filters.COMMAND, get_photo)],
+            PHOTO: [MessageHandler(filters.PHOTO, get_photo), MessageHandler(filters.TEXT & ~filters.COMMAND, get_photo)],
             POSITION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_position)],
             FULL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_fullname)],
             BIRTH_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_birthdate)],
@@ -541,6 +598,10 @@ def main():
     )
 
     app.add_handler(conv_handler)
+    
+    # CallbackHandler: Qabul qilish / Rad etish tugmalarini ushlab olish uchun
+    app.add_handler(CallbackQueryHandler(handle_decision))
+
     print("Mukammal ANKETA boti va Gemini AI ishga tushdi...")
     app.run_polling()
 
