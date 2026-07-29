@@ -1,3 +1,4 @@
+import os
 import logging
 import json
 from google import genai
@@ -19,16 +20,22 @@ logging.basicConfig(
 )
 
 # === SOZLAMALAR ===
-BOT_TOKEN = "7634467401:AAGBpV1MoC0qzeo1_8OS0bXcc6NZ3_uQubI"  # BotFather Token
-ADMIN_ID = 1168952611  # Telegram ID
+# ESLATMA: Tokenlarni Render'ning "Environment" bo'limida sozlang, bu yerga
+# haqiqiy qiymatlarni yozmang - aks holda GitHub'ga ochiq chiqib qoladi.
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW else None
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# To'lov qilingan va to'g'ri API kalitingiz ulandi:
-GEMINI_API_KEY = "AQ.Ab8RN6JKjZiUTErGf4YHBT4EKew4w2g8P1PGQu8OnIKq2F4MuA"
+if not BOT_TOKEN or not ADMIN_ID or not GEMINI_API_KEY:
+    raise RuntimeError(
+        "BOT_TOKEN, ADMIN_ID va GEMINI_API_KEY environment variable'lari sozlanmagan. "
+        "Render > Environment bo'limida ularni kiriting."
+    )
 
 # Yangi Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Siz so'ragan Gemini 3.5 Flash Lite va eng so'nggi modellar ro'yxati:
 VALIDATION_MODELS = ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash']
 ANALYSIS_MODELS = ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.0-flash']
 
@@ -199,15 +206,27 @@ async def process_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 
 async def safe_send_message(bot, chat_id, text, parse_mode="Markdown"):
+    """Markdown formatlash xato bersa, oddiy matn sifatida qayta yuboradi."""
     try:
         await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
-    except Exception:
+    except Exception as e:
+        logging.warning(f"Markdown bilan yuborishda xatolik: {e}. Oddiy matn sifatida qayta yuborilmoqda.")
         await bot.send_message(chat_id=chat_id, text=text)
+
+
+async def safe_send_photo(bot, chat_id, photo, caption, parse_mode="Markdown"):
+    """Markdown formatlash xato bersa, rasmni formatlashsiz caption bilan qayta yuboradi."""
+    try:
+        await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption, parse_mode=parse_mode)
+    except Exception as e:
+        logging.warning(f"Markdown bilan yuborishda xatolik: {e}. Oddiy matn sifatida qayta yuborilmoqda.")
+        await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption)
 
 
 # ==================== HANDLERS ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
     await update.message.reply_text(
         "Assalomu alaykum! Ishga qabul qilish anketasiga xush kelibsiz.\n\n"
         "Iltimos, anketaga biriktirish uchun o'zingizning rasmingizni yuboring (yoki matn yozib o'tkazib yuboring):"
@@ -324,7 +343,7 @@ async def get_car(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await process_text_step(update, context, CAR, 'car', "Haydovchilik guvohnomangiz bormi? Qaysi toifa (A, B, C, D, E) / Yo'q:", DRIVER_LICENSE)
 
 async def get_driver_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await process_text_step(update, context, DRIVER_LICENSE, 'driver_license', "Xorijiy tillarni bilish darajangiz:\n(O'zbek, Rus, Ingliz va h.k. - So'zlashuv, Yoziash, O'qish darajasi):", LANGUAGES)
+    return await process_text_step(update, context, DRIVER_LICENSE, 'driver_license', "Xorijiy tillarni bilish darajangiz:\n(O'zbek, Rus, Ingliz va h.k. - So'zlashuv, Yozish, O'qish darajasi):", LANGUAGES)
 
 async def get_languages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await process_text_step(update, context, LANGUAGES, 'languages', "Qaysi kompyuter dasturlarida ilgari ishlagansiz?\n(OS, Office, 1C, AutoCAD, Photoshop va h.k.):", COMPUTER)
@@ -397,57 +416,59 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardRemove()
     )
 
+    d = context.user_data
+
     summary_text = (
         "📥 *YANGI ISHGA QABUL ANKETASI (TO'LIQ)*\n"
         "====================================\n\n"
         "📌 *1. SHAXSIY MA'LUMOTLAR:*\n"
-        f"🎯 *Lavozim/Bo'lim:* {context.user_data.get('position')}\n"
-        f"👤 *F.I.Sh:* {context.user_data.get('fullname')}\n"
-        f"🎂 *Tug'ilgan sanasi:* {context.user_data.get('birthdate')}\n"
-        f"🇺🇿 *Millati:* {context.user_data.get('nationality')}\n"
-        f"📍 *Tug'ilgan joyi:* {context.user_data.get('birthplace')}\n"
-        f"🏠 *Manzil (propiska):* {context.user_data.get('address')}\n"
-        f"🏡 *Yashash sharoiti:* {context.user_data.get('housing')}\n"
-        f"📞 *Tel:* {context.user_data.get('phone')}\n\n"
+        f"🎯 *Lavozim/Bo'lim:* {d.get('position')}\n"
+        f"👤 *F.I.Sh:* {d.get('fullname')}\n"
+        f"🎂 *Tug'ilgan sanasi:* {d.get('birthdate')}\n"
+        f"🇺🇿 *Millati:* {d.get('nationality')}\n"
+        f"📍 *Tug'ilgan joyi:* {d.get('birthplace')}\n"
+        f"🏠 *Manzil (propiska):* {d.get('address')}\n"
+        f"🏡 *Yashash sharoiti:* {d.get('housing')}\n"
+        f"📞 *Tel:* {d.get('phone')}\n\n"
 
         "📌 *2. MA'LUMOTI VA ISH TAJRIBASI:*\n"
-        f"🎓 *Ma'lumoti:* {context.user_data.get('education_level')}\n"
-        f"🏫 *O'quv yurti:* {context.user_data.get('edu_details')}\n"
-        f"💼 *Ish tajribasi:* {context.user_data.get('work_exp')}\n"
-        f"✈️ *Chet el safarlari:* {context.user_data.get('trip_abroad')} ({context.user_data.get('trip_abroad_details')})\n\n"
+        f"🎓 *Ma'lumoti:* {d.get('education_level')}\n"
+        f"🏫 *O'quv yurti:* {d.get('edu_details')}\n"
+        f"💼 *Ish tajribasi:* {d.get('work_exp')}\n"
+        f"✈️ *Chet el safarlari:* {d.get('trip_abroad')} ({d.get('trip_abroad_details')})\n\n"
 
         "📌 *3. OILAVIY AHVOLI VA OILASI:*\n"
-        f"💍 *Oilaviy ahvoli:* {context.user_data.get('marital_status')}\n"
-        f"👨‍👩‍👧‍👦 *Oila a'zolari:* {context.user_data.get('family_members')}\n\n"
+        f"💍 *Oilaviy ahvoli:* {d.get('marital_status')}\n"
+        f"👨‍👩‍👧‍👦 *Oila a'zolari:* {d.get('family_members')}\n\n"
 
         "📌 *4. SHAXSIY HUDUD VA KO'NIKMALAR:*\n"
-        f"🧳 *Komandirovka:* {context.user_data.get('business_trip')}\n"
-        f"🎖 *Harbiy xizmat:* {context.user_data.get('military')}\n"
-        f"⚖️ *Sudlanganlik:* {context.user_data.get('criminal')}\n"
-        f"🚘 *Shaxsiy avto:* {context.user_data.get('car')}\n"
-        f"🪪 *Haydovchilik guvohnomasi:* {context.user_data.get('driver_license')}\n"
-        f"🌐 *Tillar:* {context.user_data.get('languages')}\n"
-        f"💻 *Kompyuter:* {context.user_data.get('computer')}\n\n"
+        f"🧳 *Komandirovka:* {d.get('business_trip')}\n"
+        f"🎖 *Harbiy xizmat:* {d.get('military')}\n"
+        f"⚖️ *Sudlanganlik:* {d.get('criminal')}\n"
+        f"🚘 *Shaxsiy avto:* {d.get('car')}\n"
+        f"🪪 *Haydovchilik guvohnomasi:* {d.get('driver_license')}\n"
+        f"🌐 *Tillar:* {d.get('languages')}\n"
+        f"💻 *Kompyuter:* {d.get('computer')}\n\n"
 
         "📌 *5. KAFOLAT VA TAVSIYALAR:*\n"
-        f"📢 *Qaerdan eshitgan:* {context.user_data.get('how_heard')}\n"
-        f"🤝 *Kafillik beruvchi:* {context.user_data.get('guarantor')}\n"
-        f"📋 *Tavsiya beruvchi:* {context.user_data.get('reference')}\n"
-        f"🔍 *Surishtirishga roziligi:* {context.user_data.get('background_check')}\n\n"
+        f"📢 *Qaerdan eshitgan:* {d.get('how_heard')}\n"
+        f"🤝 *Kafillik beruvchi:* {d.get('guarantor')}\n"
+        f"📋 *Tavsiya beruvchi:* {d.get('reference')}\n"
+        f"🔍 *Surishtirishga roziligi:* {d.get('background_check')}\n\n"
 
         "📌 *6. ISH SHAROITLARI VA TALABLAR:*\n"
-        f"💵 *Oldingi maoshi:* {context.user_data.get('prev_salary')}\n"
-        f"💰 *Kutilayotgan maosh:* {context.user_data.get('expected_salary')}\n"
-        f"⏳ *Ishlash muddati:* {context.user_data.get('work_duration')}\n"
-        f"⏰ *Overtime (qolib ishlash):* {context.user_data.get('overtime')}\n"
-        f"👥 *Majlislar:* {context.user_data.get('meetings')}\n"
-        f"🤝 *Kollektiv haqida:* {context.user_data.get('work_duration')}\n"
-        f"👨‍👩‍👦 *Ota-onani chaqirish:* {context.user_data.get('parents_call')}\n"
-        f"🏥 *Sog'lig'i:* {context.user_data.get('health')}\n"
-        f"📝 *Sifatlari:* {context.user_data.get('additional')}\n"
+        f"💵 *Oldingi maoshi:* {d.get('prev_salary')}\n"
+        f"💰 *Kutilayotgan maosh:* {d.get('expected_salary')}\n"
+        f"⏳ *Ishlash muddati:* {d.get('work_duration')}\n"
+        f"⏰ *Overtime (qolib ishlash):* {d.get('overtime')}\n"
+        f"👥 *Majlislar:* {d.get('meetings')}\n"
+        f"🤝 *Kollektiv haqida:* {d.get('teamwork')}\n"
+        f"👨‍👩‍👦 *Ota-onani chaqirish:* {d.get('parents_call')}\n"
+        f"🏥 *Sog'lig'i:* {d.get('health')}\n"
+        f"📝 *Sifatlari:* {d.get('additional')}\n"
     )
 
-    ai_analysis = await analyze_candidate_with_ai(context.user_data)
+    ai_analysis = await analyze_candidate_with_ai(d)
     ai_report_text = (
         "🤖 *GEMINI AI HR TAHLILI VA BAHOSI*\n"
         "------------------------------------\n"
@@ -455,13 +476,11 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        photo = context.user_data.get('photo')
+        photo = d.get('photo')
         if photo:
-            await context.bot.send_photo(
-                chat_id=ADMIN_ID,
-                photo=photo,
-                caption=f"📥 *YANGI NOMZOD:* {context.user_data.get('fullname')}\n🎯 *Lavozim:* {context.user_data.get('position')}",
-                parse_mode="Markdown"
+            await safe_send_photo(
+                context.bot, ADMIN_ID, photo,
+                f"📥 *YANGI NOMZOD:* {d.get('fullname')}\n🎯 *Lavozim:* {d.get('position')}"
             )
 
         await safe_send_message(context.bot, ADMIN_ID, summary_text)
