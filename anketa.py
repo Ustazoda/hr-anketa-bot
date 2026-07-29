@@ -1,18 +1,14 @@
-import os
 import logging
 import json
-import asyncio
-from aiohttp import web
 from google import genai
 from google.genai import types
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     ContextTypes,
     ConversationHandler,
-    CallbackQueryHandler,
     filters,
 )
 
@@ -22,19 +18,19 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# === SOZLAMALAR (Environment Variables orqali olinadi) ===
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7634467401:AAGBpV1MoC0qzeo1_8OS0bXcc6NZ3_uQubI")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "1168952611")) # Ishxona direktori Telegram ID
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6JkjZiuTERgf4YHBT4EKeu4w2g8P1PGQu8OnIKq2F4MuA")
+# === SOZLAMALAR ===
+BOT_TOKEN = "7634467401:AAGBpV1MoC0qzeo1_8OS0bXcc6NZ3_uQubI"  # BotFather Token
+ADMIN_ID = 1168952611  # Telegram ID
+
+# To'lov qilingan va to'g'ri API kalitingiz ulandi:
+GEMINI_API_KEY = "AQ.Ab8RN6JKjZiUTErGf4YHBT4EKew4w2g8P1PGQu8OnIKq2F4MuA"
 
 # Yangi Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Validatsiya (savol-javob va rasmni tekshirish) uchun birinchi navbatda 'lite' model ishlatiladi:
-VALIDATION_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-2.5-flash']
-
-# Chuqur HR tahlili uchun esa kuchliroq 'flash' modeli birinchi navbatda ishlaydi:
-ANALYSIS_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash']
+# Siz so'ragan Gemini 3.5 Flash Lite va eng so'nggi modellar ro'yxati:
+VALIDATION_MODELS = ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash']
+ANALYSIS_MODELS = ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.0-flash']
 
 
 def call_gemini_with_fallback(contents, models):
@@ -50,32 +46,16 @@ def call_gemini_with_fallback(contents, models):
     raise last_error
 
 
-# === RENDER UCHUN DUMMY VEB-SERVER (24/7 Bepul ishlashi uchun) ===
-async def start_dummy_server():
-    async def handle_ping(request):
-        return web.Response(text="HR Anketa Bot is running 24/7 on Render!")
-
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logging.info(f"Render Veb-server {port}-portda ishga tushdi.")
-
-
-# === TELEGRAM MENU TUGMASINI SOZLASH VA SERVERNI YOQISH ===
+# === TELEGRAM MENU TUGMASINI SOZLASH (/start va /cancel) ===
 async def post_init(application):
     commands = [
         BotCommand("start", "Anketani boshlash 🚀"),
         BotCommand("cancel", "Anketani bekor qilish ❌")
     ]
     await application.bot.set_my_commands(commands)
-    await start_dummy_server()
 
 
-# === BOSQICHLAR ===
+# === BOSQICHLAR (36 ta savol) ===
 (
     PHOTO, POSITION, FULL_NAME, BIRTH_DATE, NATIONALITY, BIRTH_PLACE, ADDRESS,
     HOUSING, PHONE, EDUCATION_LEVEL, EDU_DETAILS, WORK_EXP,
@@ -218,11 +198,11 @@ async def process_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     return next_state
 
 
-async def safe_send_message(bot, chat_id, text, parse_mode="Markdown", reply_markup=None):
+async def safe_send_message(bot, chat_id, text, parse_mode="Markdown"):
     try:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
     except Exception:
-        await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        await bot.send_message(chat_id=chat_id, text=text)
 
 
 # ==================== HANDLERS ====================
@@ -461,7 +441,7 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏳ *Ishlash muddati:* {context.user_data.get('work_duration')}\n"
         f"⏰ *Overtime (qolib ishlash):* {context.user_data.get('overtime')}\n"
         f"👥 *Majlislar:* {context.user_data.get('meetings')}\n"
-        f"🤝 *Kollektiv haqida:* {context.user_data.get('teamwork')}\n"
+        f"🤝 *Kollektiv haqida:* {context.user_data.get('work_duration')}\n"
         f"👨‍👩‍👦 *Ota-onani chaqirish:* {context.user_data.get('parents_call')}\n"
         f"🏥 *Sog'lig'i:* {context.user_data.get('health')}\n"
         f"📝 *Sifatlari:* {context.user_data.get('additional')}\n"
@@ -474,15 +454,6 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{ai_analysis}"
     )
 
-    # 👑 DIREKTOR UCHUN QABUL QILISH / RAD ETISH TUGMALARI
-    candidate_chat_id = update.effective_chat.id
-    decision_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Qabul qilindi", callback_data=f"approve_{candidate_chat_id}"),
-            InlineKeyboardButton("❌ Rad etildi", callback_data=f"reject_{candidate_chat_id}")
-        ]
-    ])
-
     try:
         photo = context.user_data.get('photo')
         if photo:
@@ -494,59 +465,12 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         await safe_send_message(context.bot, ADMIN_ID, summary_text)
-        await safe_send_message(context.bot, ADMIN_ID, ai_report_text, reply_markup=decision_keyboard)
+        await safe_send_message(context.bot, ADMIN_ID, ai_report_text)
 
     except Exception as e:
         logging.error(f"Adminga yuborishda xatolik: {e}")
 
     return ConversationHandler.END
-
-
-# ==================== DIREKTOR QARORI ISHLOVCHISI ====================
-
-async def handle_candidate_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-    parts = data.split("_")
-    action = parts[0]          # 'approve' yoki 'reject'
-    candidate_id = int(parts[1]) # Nomzodning Telegram Chat ID si
-
-    if action == "approve":
-        candidate_msg = (
-            "🎉 **TABRIKLAYMIZ!**\n\n"
-            "Sizning anketangiz rahbariyat tomonidan ko'rib chiqildi va "
-            "**ishga qabul qilindingiz!** 👏\n\n"
-            "Tez orada mas'ul xodimimiz siz bilan bog'lanib, keyingi bosqichlarni tushuntiradi."
-        )
-        admin_status_text = "\n\n📌 **QAROR:** ✅ ISHGA QABUL QILINDI"
-        alert_text = "✅ Nomzod qabul qilindi. Xabar nomzodga yuborildi!"
-    else:
-        candidate_msg = (
-            "Assalomu alaykum.\n\n"
-            "Sizning anketangiz rahbariyat tomonidan ko'rib chiqildi. "
-            "Afsuski, ushbu bo'limga nomzodingiz **mos kelmadi**.\n\n"
-            "Kelgusi o'qish va ishlaringizda omad tilaymiz!"
-        )
-        admin_status_text = "\n\n📌 **QAROR:** ❌ RAD ETILDI"
-        alert_text = "❌ Nomzod rad etildi. Xabar nomzodga yuborildi."
-
-    # 1. Nomzodga shaxsiy xabar yuborish
-    try:
-        await context.bot.send_message(chat_id=candidate_id, text=candidate_msg, parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Nomzodga xabar yuborishda xatolik: {e}")
-        alert_text += " (Lekin nomzodga xabar yetmadi, botni bloklagan bo'lishi mumkin)."
-
-    # 2. Direktor xabaridagi tugmalarni olib tashlab, qarorni yozib qo'yish
-    try:
-        updated_text = query.message.text + admin_status_text
-        await query.edit_message_text(text=updated_text, parse_mode="Markdown")
-    except Exception:
-        pass
-
-    await query.answer(alert_text, show_alert=True)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -601,11 +525,7 @@ def main():
     )
 
     app.add_handler(conv_handler)
-    
-    # Direktor qarorlarini ushlash uchun tugma handler'i:
-    app.add_handler(CallbackQueryHandler(handle_candidate_decision, pattern="^(approve|reject)_"))
-
-    print("Mukammal ANKETA boti, Gemini AI va Direktor qarori tugmalari ishga tushdi...")
+    print("Mukammal ANKETA boti va Gemini AI ishga tushdi...")
     app.run_polling()
 
 
