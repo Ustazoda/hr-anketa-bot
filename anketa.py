@@ -1,5 +1,7 @@
+import os
 import logging
 import json
+from aiohttp import web
 from google import genai
 from google.genai import types
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, BotCommand
@@ -19,18 +21,16 @@ logging.basicConfig(
 )
 
 # === SOZLAMALAR ===
-BOT_TOKEN = "7634467401:AAGBpV1MoC0qzeo1_8OS0bXcc6NZ3_uQubI"  # BotFather Token
-ADMIN_ID = 1168952611  # Telegram ID
-
-# ANA SHU QATOR TUSHIB QOLGAN EDI:
-GEMINI_API_KEY = "AQ.Ab8RN6IYEvXJwxdctmuwXFGtVLJNIzMCmIuZC4W_bx5_MCd08Q"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7634467401:AAFiiVFYVFFtk6F3b8TFfhrBFacZVPz2ZTE")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1168952611"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Yangi Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Siz so'ragan Gemini 3.5 Flash Lite va eng so'nggi modellar ro'yxati:
-VALIDATION_MODELS = ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash']
-ANALYSIS_MODELS = ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.0-flash']
+# Faol va ishlaydigan Gemini 3.6 Flash modellar
+VALIDATION_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite']
+ANALYSIS_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite']
 
 
 def call_gemini_with_fallback(contents, models):
@@ -46,13 +46,29 @@ def call_gemini_with_fallback(contents, models):
     raise last_error
 
 
-# === TELEGRAM MENU TUGMASINI SOZLASH (/start va /cancel) ===
+# === RENDER PORTI UCHUN DUMMY SERVER (Render 'Live' deyishi uchun SHART) ===
+async def start_dummy_server():
+    async def handle_ping(request):
+        return web.Response(text="HR Anketa Bot is running on Render!")
+
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Render Veb-server {port}-portda ishga tushdi.")
+
+
+# === TELEGRAM MENU TUGMASINI SOZLASH ===
 async def post_init(application):
     commands = [
         BotCommand("start", "Anketani boshlash 🚀"),
         BotCommand("cancel", "Anketani bekor qilish ❌")
     ]
     await application.bot.set_my_commands(commands)
+    await start_dummy_server()
 
 
 # === BOSQICHLAR (36 ta savol) ===
@@ -441,7 +457,7 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏳ *Ishlash muddati:* {context.user_data.get('work_duration')}\n"
         f"⏰ *Overtime (qolib ishlash):* {context.user_data.get('overtime')}\n"
         f"👥 *Majlislar:* {context.user_data.get('meetings')}\n"
-        f"🤝 *Kollektiv haqida:* {context.user_data.get('work_duration')}\n"
+        f"🤝 *Kollektiv haqida:* {context.user_data.get('teamwork')}\n"
         f"👨‍👩‍👦 *Ota-onani chaqirish:* {context.user_data.get('parents_call')}\n"
         f"🏥 *Sog'lig'i:* {context.user_data.get('health')}\n"
         f"📝 *Sifatlari:* {context.user_data.get('additional')}\n"
