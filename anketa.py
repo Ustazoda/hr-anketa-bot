@@ -25,25 +25,37 @@ logging.basicConfig(
 # === SOZLAMALAR ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1168952611"))
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Gemini Client
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+# Gemini API Keylarini olish (Vergul bilan bir nechta key kiritilgan bo'lsa to'g'ri ajratadi)
+RAW_KEYS = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 
-VALIDATION_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro']
-ANALYSIS_MODELS = ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro']
-
+# Rasmiy va faol Google Gemini Modellari
+VALIDATION_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp','gemini-1.0-pro','gemini-3.5-flash-lite','gemini-3.1-pro-preview']
+ANALYSIS_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp','gemini-1.0-pro','gemini-3.6-flash', 'gemini-3.5-flash-lite','gemini-3.1-pro-preview']
 
 def call_gemini_with_fallback(contents, models):
-    """Modellarni birma-bir sinab ko'radi."""
+    """Mavjud barcha API Kalitlar va Modellarni birma-bir sinab ko'radi."""
     last_error = None
-    for model_name in models:
+    
+    if not GEMINI_API_KEYS:
+        raise ValueError("GEMINI_API_KEY environment variable topilmadi!")
+
+    for api_key in GEMINI_API_KEYS:
         try:
-            return ai_client.models.generate_content(model=model_name, contents=contents)
+            client = genai.Client(api_key=api_key)
+            for model_name in models:
+                try:
+                    return client.models.generate_content(model=model_name, contents=contents)
+                except Exception as e:
+                    last_error = e
+                    logging.warning(f"Model '{model_name}' ishlamadi ({e}). Keyingisiga o'tilmoqda...")
+                    continue
         except Exception as e:
             last_error = e
-            logging.warning(f"Model '{model_name}' ishlamadi ({e}). Keyingisiga o'tilmoqda...")
+            logging.warning(f"API Key ishlamadi ({e}). Zaxiradagi kalitga o'tilmoqda...")
             continue
+            
     raise last_error
 
 
@@ -122,7 +134,7 @@ VAZIFA:
 Foydalanuvchi javobi savolga mantiqan mos keladimi?
 
 MUHIM QOIDALAR:
-1. Agar javob savolga umuman aloqasiz bo'lsa (masalan: so'kish, "asdfgh", yoki "shahar" degan savolga "ovqat" deb javob berilgan bo'lsa) -> valid: false.
+1. Agar javob savolga umuman aloqasiz bo'lsa (masalan: so'kish, "asdfgh", "kjkhhi87to8f8ot60", yoki "shahar" degan savolga "ovqat" deb javob berilgan bo'lsa) -> valid: false.
 2. Oddiy, so'zlashuv tilidagi, qisqa yoki xatolar bilan yozilgan javoblarni ("yomon", "yo'q", "sog'lomman", "sog'lig'im joyida", "kasalligim yo'q", "ishlamaganman", "o'rganaman", "uylanmaganman", "uylangan", "harbiyda bo'lmaganman", "sudlanmaganman") HAMMA VAQT to'g'ri deb qabul qiling -> valid: true.
 3. "Sog'ligingizda muammolar yo'qmi?" savoliga nomzod faqat o'zining sog'lig'i haqida javob bersa ("yo'q", "sog'lomman", "joyida") yuz foiz to'g'ri deb qabul qiling -> valid: true.
 
@@ -143,14 +155,14 @@ Faqat JSON formatida javob bering:
 
 async def validate_photo(photo_bytes: bytes) -> dict:
     prompt = """Siz fotosuratlarni tahlil qiluvchi mutaxassisiz.
-Ushbu rasmda INSON YUZI ko'rinib turibdimi?
+Ushbu rasmda INSON YUZI (portret, selfie yoki odam qiyofasi) ko'rinib turibdimi?
 
 QOIDALAR:
-1. Buyumlar, hujjat, mashina, hayvonlar -> "is_person": false
+1. Buyumlar, hujjat, mashina, avtomobil, hayvonlar -> "is_person": false
 2. Inson yuzi ko'ringan bo'lsa -> "is_person": true
 
 FAQAT ushbu JSON formatida javob bering:
-{"is_person": true, "reason": "Rasmda inson yuzi ko'rinib turibdi."}"""
+{"is_person": true yoki false, "reason": "qisqa sabab o'zbek tilida"}"""
 
     try:
         contents = [
@@ -160,6 +172,7 @@ FAQAT ushbu JSON formatida javob bering:
         response = call_gemini_with_fallback(contents, VALIDATION_MODELS)
         text = response.text.strip().lower()
 
+        # 1. JSON parsing urinishi
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
             try:
@@ -169,10 +182,11 @@ FAQAT ushbu JSON formatida javob bering:
             except Exception:
                 pass
 
-        if "true" in text or "ha" in text or "inson" in text or "yuzi" in text:
-            return {"is_person": True, "reason": "Rasmda inson ko'rinib turibdi."}
-        elif "false" in text or "yo'q" in text:
+        # 2. Text fallback (Salbiy javoblarni birinchi tekshiramiz!)
+        if "false" in text or "yo'q" in text or "mashina" in text or "avtomobil" in text or "buyum" in text:
             return {"is_person": False, "reason": "Rasmda inson yuzi ko'rinmayapti."}
+        elif "true" in text or "ha" in text:
+            return {"is_person": True, "reason": "Rasmda inson ko'rinib turibdi."}
 
         return {"is_person": True, "reason": ""}
 
@@ -405,11 +419,6 @@ async def get_workexp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def get_video_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = ReplyKeyboardMarkup([
-        ["Ha, avvalgi do'konda sahifani yuritganman"],
-        ["Yo'q, lekin tez o'rganib olaman"]
-    ], resize_keyboard=True, one_time_keyboard=True)
-    
     return await process_text_step(
         update, context, VIDEO_SKILLS, 'video_skills',
         "📱 Telefoningizda sifatli video ololaysizmi va qaysi rusumdagi telefondan foydalanasiz?\n\n*(Misol: Ha, video olaman. Telefonim iPhone 13 / Samsung S21)*",
