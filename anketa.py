@@ -53,7 +53,6 @@ async def start_dummy_server():
         return web.Response(text="Ziynat HR Anketa Bot is running on Render!", status=200)
 
     app = web.Application()
-    # Barcha HTTP metodlarini (GET, HEAD, POST) qabul qiladi
     app.router.add_route("*", "/", handle_ping)
     
     runner = web.AppRunner(app)
@@ -74,15 +73,16 @@ async def post_init(application):
     await start_dummy_server()
 
 
-# === BOSQICHLAR (31 ta savol) ===
+# === BOSQICHLAR ===
 (
     PHOTO, POSITION, FULL_NAME, BIRTH_DATE, NATIONALITY, ADDRESS, HOUSING, PHONE,
     EDUCATION_LEVEL, EDU_DETAILS, WORK_EXP,
     VIDEO_SKILLS, EDITING_APPS, SMM_EXP, STORE_DUTIES,
-    TRIP_ABROAD, TRIP_ABROAD_DETAILS, MARITAL_STATUS, FAMILY_MEMBERS, MILITARY_CRIMINAL,
+    TRIP_ABROAD, TRIP_ABROAD_DETAILS, MARITAL_STATUS, FAMILY_MEMBERS, 
+    MILITARY, CRIMINAL,
     LANGUAGES, HOW_HEARD, GUARANTOR, BACKGROUND_CHECK, PREV_SALARY, EXPECTED_SALARY,
-    WORK_DURATION, OVERTIME_MEETINGS, TEAMWORK_HEALTH, ADDITIONAL
-) = range(30)
+    WORK_DURATION, OVERTIME, HEALTH, ADDITIONAL
+) = range(31)
 
 QUESTIONS = {
     POSITION: "Qaysi bo'lim va lavozimga topshiryapsiz?",
@@ -98,28 +98,36 @@ QUESTIONS = {
     STORE_DUTIES: "Do'kon vazifalari va tovarlar bilan ishlash",
     TRIP_ABROAD_DETAILS: "Chet el safarlari tafsiloti",
     FAMILY_MEMBERS: "Oila a'zolaringiz haqida ma'lumot",
-    MILITARY_CRIMINAL: "Harbiy xizmat va sudlanganlik",
+    MILITARY: "Harbiy xizmatda bo'lganmisiz",
+    CRIMINAL: "Sudlanganlik holatingiz",
     LANGUAGES: "Xorijiy tillarni bilish darajangiz",
-    HOW_HEARD: "Do'konimiz haqida qayerdan eshitdingiz",
+    HOW_HEARD: "Bizning 'Ziynat' do'konimiz haqida qayerdan eshitdingiz?",
     GUARANTOR: "Kafillik yoki tavsiya bera oladigan shaxs",
-    PREV_SALARY: "Oldingi ish joyingizdagi maosh",
+    PREV_SALARY: "Oldingi ish joyingizdagi maoshingiz",
     EXPECTED_SALARY: "Kutilayotgan maosh",
     WORK_DURATION: "Qancha muddat ishlamoqchisiz",
-    TEAMWORK_HEALTH: "Kollektiv va sog'lingiz",
+    HEALTH: "Sog'ligingizda muammolar yo'qmi?",
     ADDITIONAL: "O'zingiz haqingizda qo'shimcha ma'lumot",
 }
 
 
-# ==================== AI VALIDATSIYA ====================
+# ==================== YUMSHATILGAN AI VALIDATSIYA ====================
 
 async def validate_answer(question: str, answer: str) -> dict:
-    prompt = f"""Siz "Ziynat" bijuteriya va soatlar do'koni uchun ishga qabul anketasini tekshiruvchi yordamchisiz.
+    prompt = f"""Siz "Ziynat" do'koni ishga qabul anketasini tekshiruvchi bag'rikeng va tushunuvchan yordamchisiz.
 Savol: "{question}"
 Foydalanuvchi javobi: "{answer}"
 
-Ushbu javob savolga mantiqan mos keladimi?
+VAZIFA:
+Foydalanuvchi javobi savolga mantiqan mos keladimi?
+
+MUHIM QOIDALAR:
+1. Agar javob savolga umuman aloqasiz bo'lsa (masalan: so'kish, "asdfgh", yoki "shahar" degan savolga "ovqat" deb javob berilgan bo'lsa) -> valid: false.
+2. Oddiy, so'zlashuv tilidagi, qisqa yoki xatolar bilan yozilgan javoblarni ("yomon", "yo'q", "sog'lomman", "sog'lig'im joyida", "kasalligim yo'q", "ishlamaganman", "o'rganaman", "uylanmaganman", "uylangan", "harbiyda bo'lmaganman", "sudlanmaganman") HAMMA VAQT to'g'ri deb qabul qiling -> valid: true.
+3. "Sog'ligingizda muammolar yo'qmi?" savoliga nomzod faqat o'zining sog'lig'i haqida javob bersa ("yo'q", "sog'lomman", "joyida") yuz foiz to'g'ri deb qabul qiling -> valid: true.
+
 Faqat JSON formatida javob bering:
-{{"valid": true yoki false, "reason": "qisqa sabab, o'zbek tilida"}}"""
+{{"valid": true yoki false, "reason": "agar valid false bo'lsa, qisqa sababini o'zbek tilida yozing"}}"""
 
     try:
         response = call_gemini_with_fallback(prompt, VALIDATION_MODELS)
@@ -135,11 +143,11 @@ Faqat JSON formatida javob bering:
 
 async def validate_photo(photo_bytes: bytes) -> dict:
     prompt = """Siz fotosuratlarni tahlil qiluvchi mutaxassisiz.
-Ushbu rasmda haqiqiy INSON YUZI (portret, selfie yoki inson qiyofasi) ko'rinib turibdimi?
+Ushbu rasmda INSON YUZI ko'rinib turibdimi?
 
 QOIDALAR:
 1. Buyumlar, hujjat, mashina, hayvonlar -> "is_person": false
-2. Inson yuzi yoki qiyofasi ko'ringan bo'lsa -> "is_person": true
+2. Inson yuzi ko'ringan bo'lsa -> "is_person": true
 
 FAQAT ushbu JSON formatida javob bering:
 {"is_person": true, "reason": "Rasmda inson yuzi ko'rinib turibdi."}"""
@@ -161,7 +169,7 @@ FAQAT ushbu JSON formatida javob bering:
             except Exception:
                 pass
 
-        if "true" in text or "ha" in text or "inson" in text or "odam" in text or "yuzi" in text:
+        if "true" in text or "ha" in text or "inson" in text or "yuzi" in text:
             return {"is_person": True, "reason": "Rasmda inson ko'rinib turibdi."}
         elif "false" in text or "yo'q" in text:
             return {"is_person": False, "reason": "Rasmda inson yuzi ko'rinmayapti."}
@@ -175,25 +183,27 @@ FAQAT ushbu JSON formatida javob bering:
 
 async def analyze_candidate_with_ai(user_data: dict) -> str:
     prompt = f"""
-Siz "ZIYNAT" bijuteriya va soatlar do'konining HR menejeri va tajribali analitigisiz.
+Siz "ZIYNAT" bijuteriya va soatlar do'konining HR menejerisiz.
 Do'konda xodimlar mijozlarga soat va zargarlik buyumlarini sotishi, tovarlarni chiroyli joylashtirishi, mobil telefon orqali video olib, CapCut kabi ilovalarda montaj qilishi hamda Instagram/Telegram'da mijozlar bilan muloqot qilishi kerak.
 
 NOMZOD MA'LUMOTLARI:
 - F.I.Sh va Lavozim: {user_data.get('fullname')} / {user_data.get('position')}
-- Yoshi va Manzili: {user_data.get('birthdate')} / {user_data.get('address')} ({user_data.get('housing')})
+- Yoshi, Millati va Manzili: {user_data.get('birthdate')} / {user_data.get('nationality')} / {user_data.get('address')} ({user_data.get('housing')})
 - Tel: {user_data.get('phone')}
-- Ma'lumoti va Ish tajribasi: {user_data.get('education_level')} / {user_data.get('work_exp')}
-- 📹 Video olish va Telefon modeli: {user_data.get('video_skills')}
-- 🎬 Montaj ko'nikmalari (CapCut va b.): {user_data.get('editing_apps')}
+- Ma'lumoti va Ish tajribasi: {user_data.get('education_level')} / {user_data.get('edu_details')} | Tajriba: {user_data.get('work_exp')}
+- 📹 Video olish va Telefon: {user_data.get('video_skills')}
+- 🎬 Montaj (CapCut va b.): {user_data.get('editing_apps')}
 - 📱 SMM va Mijozlar bilan muloqot: {user_data.get('smm_exp')}
 - 🛍 Do'kon vazifalariga tayyorligi: {user_data.get('store_duties')}
 - Oilaviy ahvoli va A'zolari: {user_data.get('marital_status')} / {user_data.get('family_members')}
+- Harbiy xizmat / Sudlanganlik: {user_data.get('military')} / {user_data.get('criminal')}
 - Tillar: {user_data.get('languages')}
 - Oldingi va Kutilayotgan maosh: {user_data.get('prev_salary')} / {user_data.get('expected_salary')}
 - Ishlash muddati / Qolib ishlash: {user_data.get('work_duration')} / {user_data.get('overtime')}
+- Sog'lig'i: {user_data.get('health')}
 - Qo'shimcha sifatlari: {user_data.get('additional')}
 
-QUYIDAGI MEZONLAR BO'YICHA "ZIYNAT" DO'KONI DIREKTORI UCHUN HR TAHLIL VA TAVSIYA BERING (O'zbek tilida):
+QUYIDAGI MEZONLAR BO'YICHA "ZIYNAT" DO'KONI DIREKTORI UCHUN HR TAHLIL BERING (O'zbek tilida):
 1. **Sotuv va Mijozlar bilan muloqot salohiyati (1-10 ball)**
 2. **Video olish va Montaj (CapCut/SMM) mahorati (1-10 ball)**
 3. **Mas'uliyat va Do'kon vazifalariga tayyorligi**
@@ -208,19 +218,32 @@ QUYIDAGI MEZONLAR BO'YICHA "ZIYNAT" DO'KONI DIREKTORI UCHUN HR TAHLIL VA TAVSIYA
         return "⚠️ Sun'iy intellekt tahlilida xatolik yuz berdi."
 
 
-async def process_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE, current_state: int, field_name: str, next_question: str, next_state: int, keyboard=None):
+async def process_text_step(
+    update: Update, 
+    context: ContextTypes.DEFAULT_TYPE, 
+    current_state: int, 
+    field_name: str, 
+    current_question_prompt: str,
+    next_question_prompt: str, 
+    next_state: int, 
+    keyboard=None
+):
     answer = update.message.text
     question_text = QUESTIONS.get(current_state, "")
 
     if question_text:
         result = await validate_answer(question_text, answer)
         if not result.get("valid", True):
-            await update.message.reply_text(f"⚠️ {result.get('reason', 'Javob savolga mos emas.')}\n\nIltimos, qaytadan kiriting:\n{next_question}")
+            await update.message.reply_text(
+                f"⚠️ {result.get('reason', 'Javob savolga mos emas.')}\n\n"
+                f"Iltimos, ushbu savolga qaytadan javob bering:\n{current_question_prompt}",
+                parse_mode="Markdown"
+            )
             return current_state
 
     context.user_data[field_name] = answer
     reply_markup = keyboard if keyboard else ReplyKeyboardRemove()
-    await update.message.reply_text(next_question, reply_markup=reply_markup)
+    await update.message.reply_text(next_question_prompt, reply_markup=reply_markup, parse_mode="Markdown")
     return next_state
 
 
@@ -308,16 +331,38 @@ async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def get_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await process_text_step(update, context, POSITION, 'position', "Familiya, ism va sharifingizni kiriting:\n\n*(Misol: Abdullayeva Dilnoza Karim qizi)*", FULL_NAME)
+    return await process_text_step(
+        update, context, POSITION, 'position',
+        "Qaysi bo'lim va lavozimga topshiryapsiz?\n\n*(Misol: Do'kon sotuvchisi va kontent-menejer)*",
+        "Familiya, ism va sharifingizni kiriting:\n\n*(Misol: Abdullayeva Dilnoza Karim qizi)*",
+        FULL_NAME
+    )
 
 async def get_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await process_text_step(update, context, FULL_NAME, 'fullname', "Tug'ilgan sanangizni kiriting:\n\n*(Misol: 15.05.2001)*", BIRTH_DATE)
+    return await process_text_step(
+        update, context, FULL_NAME, 'fullname',
+        "Familiya, ism va sharifingizni kiriting:\n\n*(Misol: Abdullayeva Dilnoza Karim qizi)*",
+        "Tug'ilgan sanangizni kiriting:\n\n*(Misol: 15.05.2001)*",
+        BIRTH_DATE
+    )
 
 async def get_birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await process_text_step(update, context, BIRTH_DATE, 'birthdate', "Millatingizni kiriting:\n\n*(Misol: O'zbek)*", NATIONALITY)
+    keyboard = ReplyKeyboardMarkup([["O'zbek", "Rus", "Tojik"]], resize_keyboard=True, one_time_keyboard=True)
+    return await process_text_step(
+        update, context, BIRTH_DATE, 'birthdate',
+        "Tug'ilgan sanangizni kiriting:\n\n*(Misol: 15.05.2001)*",
+        "Millatingizni tanlang yoki kiriting:",
+        NATIONALITY,
+        keyboard=keyboard
+    )
 
 async def get_nationality(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await process_text_step(update, context, NATIONALITY, 'nationality', "Doimiy yashash joyingiz (propiska manzilingiz):\n\n*(Misol: Toshkent sh., Chilonzor tumani, 5-mavze)*", ADDRESS)
+    return await process_text_step(
+        update, context, NATIONALITY, 'nationality',
+        "Millatingizni tanlang yoki kiriting:",
+        "Doimiy yashash joyingiz (propiska manzilingiz):\n\n*(Misol: Toshkent sh., Chilonzor tumani, 5-mavze)*",
+        ADDRESS
+    )
 
 async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = ReplyKeyboardMarkup([["Hovli", "Dom"]], resize_keyboard=True, one_time_keyboard=True)
@@ -334,87 +379,145 @@ async def get_housing(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.contact.phone_number if update.message.contact else update.message.text
     context.user_data['phone'] = phone
-    keyboard = ReplyKeyboardMarkup([["Oliy", "O'rta maxsus", "O'rta"]], resize_keyboard=True, one_time_keyboard=True)
+    keyboard = ReplyKeyboardMarkup([["O'rta", "O'rta maxsus", "Oliy"]], resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text("Ma'lumotingiz darajasi:", reply_markup=keyboard)
     return EDUCATION_LEVEL
 
 async def get_education_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['education_level'] = update.message.text
-    await update.message.reply_text("Qachon va qaysi o'quv yurtini tamomlagansiz?\n\n*(Misol: 2022-yil, Toshkent Moliya Instituti)*", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("Qachon va qaysi o'quv yurtini tamomlagansiz?\n\n*(Misol: 2022-yil, Toshkent Moliya Instituti)*", reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
     return EDU_DETAILS
 
 async def get_edudetails(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await process_text_step(update, context, EDU_DETAILS, 'edu_details', "Avval qaysi korxona yoki do'konlarda va qanday lavozimda ishlagansiz?\n\n*(Misol: 2023-yil, 'X' kiyim do'konida sotuvchi bo'lib 1 yil ishlaganman)*", WORK_EXP)
+    return await process_text_step(
+        update, context, EDU_DETAILS, 'edu_details',
+        "Qachon va qaysi o'quv yurtini tamomlagansiz?\n\n*(Misol: 2022-yil, Toshkent Moliya Instituti)*",
+        "Avval qaysi korxona yoki do'konlarda va qanday lavozimda ishlagansiz?\n\n*(Misol: 2023-yil, 'X' kiyim do'konida sotuvchi bo'lib 1 yil ishlaganman)*",
+        WORK_EXP
+    )
 
 async def get_workexp(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['work_exp'] = update.message.text
-    await update.message.reply_text(
-        "📱 Telefoningizda sifatli video ololaysizmi va qaysi rusumdagi telefondan foydalanasiz?\n\n"
-        "*(Misol: Ha, video olaman. Telefonim iPhone 13 / Samsung S21)*"
+    return await process_text_step(
+        update, context, WORK_EXP, 'work_exp',
+        "Avval qaysi korxona yoki do'konlarda va qanday lavozimda ishlagansiz?\n\n*(Misol: 2023-yil, 'X' kiyim do'konida sotuvchi bo'lib 1 yil ishlaganman)*",
+        "📱 Telefoningizda sifatli video ololaysizmi va qaysi rusumdagi telefondan foydalanasiz?\n\n*(Misol: Ha, video olaman. Telefonim iPhone 13 / Samsung S21)*",
+        VIDEO_SKILLS
     )
-    return VIDEO_SKILLS
 
 async def get_video_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = ReplyKeyboardMarkup([
+        ["Ha, avvalgi do'konda sahifani yuritganman"],
+        ["Yo'q, lekin tez o'rganib olaman"]
+    ], resize_keyboard=True, one_time_keyboard=True)
+    
     return await process_text_step(
         update, context, VIDEO_SKILLS, 'video_skills',
-        "🎬 Videolarni qaysi ilovalarda montaj qilasiz va qaysi birida yaxshi ishlay olasiz?\n\n"
-        "*(Misol: CapCut, InShot, VN. CapCut dasturida juda yaxshi montaj qilaman)*",
+        "📱 Telefoningizda sifatli video ololaysizmi va qaysi rusumdagi telefondan foydalanasiz?\n\n*(Misol: Ha, video olaman. Telefonim iPhone 13 / Samsung S21)*",
+        "🎬 Videolarni qaysi ilovalarda montaj qilasiz va qaysi birida yaxshi ishlay olasiz?\n\n*(Misol: CapCut, InShot, VN. CapCut dasturida juda yaxshi montaj qilaman)*",
         EDITING_APPS
     )
 
 async def get_editing_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = ReplyKeyboardMarkup([
+        ["Ha, avvalgi do'konda sahifani yuritganman"],
+        ["Yo'q, lekin tez o'rganib olaman"]
+    ], resize_keyboard=True, one_time_keyboard=True)
+
     return await process_text_step(
         update, context, EDITING_APPS, 'editing_apps',
-        "💬 Instagram va Telegram'ga video joylash hamda mijozlar xabarlariga (DM/Comment) javob berish tajribangiz bormi?\n\n"
-        "*(Misol: Ha, avvalgi do'konda sahifani yuritganman / Yo'q, lekin tez o'rganib olaman)*",
-        SMM_EXP
+        "🎬 Videolarni qaysi ilovalarda montaj qilasiz va qaysi birida yaxshi ishlay olasiz?\n\n*(Misol: CapCut, InShot, VN. CapCut dasturida juda yaxshi montaj qilaman)*",
+        "💬 Instagram va Telegram'ga video joylash hamda mijozlar xabarlariga (DM/Comment) javob berish tajribangiz bormi?",
+        SMM_EXP,
+        keyboard=keyboard
     )
 
 async def get_smm_exp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = ReplyKeyboardMarkup([["Ha", "Yo'q"]], resize_keyboard=True, one_time_keyboard=True)
+
     return await process_text_step(
         update, context, SMM_EXP, 'smm_exp',
-        "🛍 Do'konda tovarlarni (soat/bijuteriya) chiroyli joylashtirish, mijozlar bilan muloqot qilish va video olish vazifalarini bajara olasizmi?\n\n"
-        "*(Misol: Ha, barcha vazifalarni mas'uliyat bilan bajara olaman)*",
-        STORE_DUTIES
+        "💬 Instagram va Telegram'ga video joylash hamda mijozlar xabarlariga (DM/Comment) javob berish tajribangiz bormi?",
+        "🛍 Do'konda tovarlarni (soat/bijuteriya) chiroyli joylashtirish, mijozlar bilan muloqot qilish va video olish vazifalarini bajara olasizmi?",
+        STORE_DUTIES,
+        keyboard=keyboard
     )
 
 async def get_store_duties(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['store_duties'] = update.message.text
     keyboard = ReplyKeyboardMarkup([["Ha", "Yo'q"]], resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text("Chet el safariga chiqqanmisiz?", reply_markup=keyboard)
-    return TRIP_ABROAD
+
+    return await process_text_step(
+        update, context, STORE_DUTIES, 'store_duties',
+        "🛍 Do'konda tovarlarni (soat/bijuteriya) chiroyli joylashtirish, mijozlar bilan muloqot qilish va video olish vazifalarini bajara olasizmi?",
+        "Chet el safariga chiqqanmisiz?",
+        TRIP_ABROAD,
+        keyboard=keyboard
+    )
 
 async def get_trip_abroad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     context.user_data['trip_abroad'] = text
+    marital_keyboard = ReplyKeyboardMarkup([
+        ["Uylangan", "Uylanmagan"],
+        ["Turmush qurgan", "Turmush qurmagan"]
+    ], resize_keyboard=True, one_time_keyboard=True)
+
     if text.strip().lower() == "ha":
-        await update.message.reply_text("Chet elga qachon, qayerga va nima sababdan chiqqansiz?\n\n*(Misol: 2022-yil Turkiyaga vaqtinchalik sayohatga)*", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("Chet elga qachon, qayerga va nima sababdan chiqqansiz?\n\n*(Misol: 2022-yil Turkiyaga vaqtinchalik sayohatga)*", reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
         return TRIP_ABROAD_DETAILS
     else:
         context.user_data['trip_abroad_details'] = "Yo'q"
-        keyboard = ReplyKeyboardMarkup([["Turmush qurgan", "Turmush qurmagan"]], resize_keyboard=True, one_time_keyboard=True)
-        await update.message.reply_text("Oilaviy ahvolingiz:", reply_markup=keyboard)
+        await update.message.reply_text("Oilaviy ahvolingizni tanlang:", reply_markup=marital_keyboard)
         return MARITAL_STATUS
 
 async def get_trip_abroad_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = ReplyKeyboardMarkup([["Turmush qurgan", "Turmush qurmagan"]], resize_keyboard=True, one_time_keyboard=True)
-    return await process_text_step(update, context, TRIP_ABROAD_DETAILS, 'trip_abroad_details', "Oilaviy ahvolingiz:", MARITAL_STATUS, keyboard=keyboard)
+    marital_keyboard = ReplyKeyboardMarkup([
+        ["Uylangan", "Uylanmagan"],
+        ["Turmush qurgan", "Turmush qurmagan"]
+    ], resize_keyboard=True, one_time_keyboard=True)
+
+    return await process_text_step(
+        update, context, TRIP_ABROAD_DETAILS, 'trip_abroad_details',
+        "Chet elga qachon, qayerga va nima sababdan chiqqansiz?\n\n*(Misol: 2022-yil Turkiyaga vaqtinchalik sayohatga)*",
+        "Oilaviy ahvolingizni tanlang:",
+        MARITAL_STATUS,
+        keyboard=marital_keyboard
+    )
 
 async def get_marital_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['marital_status'] = update.message.text
-    await update.message.reply_text("Oila a'zolaringiz haqida ma'lumot bering:\n\n*(Misol: Otam - tadbirkor, Onam - uy bekasi)*", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        "Oila a'zolaringiz haqida ma'lumot bering:\n\n"
+        "(F.I.Sh., tug'ilgan yili, ish joyi va sudlangan/sudlanmaganligi)",
+        reply_markup=ReplyKeyboardRemove()
+    )
     return FAMILY_MEMBERS
 
 async def get_family_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    military_keyboard = ReplyKeyboardMarkup([["Harbiyda bo'lganman", "Harbiyda bo'lmaganman"]], resize_keyboard=True, one_time_keyboard=True)
+
     return await process_text_step(
         update, context, FAMILY_MEMBERS, 'family_members',
-        "Harbiy xizmat va sudlanganlik holatingiz haqida yozing:\n\n*(Misol: Harbiyda bo'lmaganman / Sudlanmaganman)*",
-        MILITARY_CRIMINAL
+        "Oila a'zolaringiz haqida ma'lumot bering:\n\n(F.I.Sh., tug'ilgan yili, ish joyi va sudlangan/sudlanmaganligi)",
+        "Harbiy xizmatda bo'lganmisiz?",
+        MILITARY,
+        keyboard=military_keyboard
     )
 
-async def get_military_criminal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_military(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    criminal_keyboard = ReplyKeyboardMarkup([["Sudlanmaganman", "Sudlanganman"]], resize_keyboard=True, one_time_keyboard=True)
+
     return await process_text_step(
-        update, context, MILITARY_CRIMINAL, 'military_criminal',
+        update, context, MILITARY, 'military',
+        "Harbiy xizmatda bo'lganmisiz?",
+        "Sudlanganlik holatingiz:",
+        CRIMINAL,
+        keyboard=criminal_keyboard
+    )
+
+async def get_criminal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await process_text_step(
+        update, context, CRIMINAL, 'criminal',
+        "Sudlanganlik holatingiz:",
         "Qaysi tillarni bilasiz va qaysi darajada?\n\n*(Misol: O'zbek tili - a'lo, Rus tili - so'zlashuv darajasida)*",
         LANGUAGES
     )
@@ -422,13 +525,15 @@ async def get_military_criminal(update: Update, context: ContextTypes.DEFAULT_TY
 async def get_languages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await process_text_step(
         update, context, LANGUAGES, 'languages',
-        "Bizning 'Ziynat' do'konimiz haqida qayerdan eshitdingiz?\n\n*(Misol: Telegram kanaldan / Tanishim tavsiya qildi)*",
+        "Qaysi tillarni bilasiz va qaysi darajada?\n\n*(Misol: O'zbek tili - a'lo, Rus tili - so'zlashuv darajasida)*",
+        "Bizning 'Ziynat' do'konimiz haqida qayerdan eshitdingiz?",
         HOW_HEARD
     )
 
 async def get_how_heard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await process_text_step(
         update, context, HOW_HEARD, 'how_heard',
+        "Bizning 'Ziynat' do'konimiz haqida qayerdan eshitdingiz?",
         "Sizga kim kafillik yoki tavsiya bera oladi?\n\n*(Misol: Oxirgi ish joyimdagi rahbarim: Aliyev Vali, +998901234567)*",
         GUARANTOR
     )
@@ -441,29 +546,44 @@ async def get_guarantor(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_background_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['background_check'] = update.message.text
-    await update.message.reply_text("Oldingi ish joyingizdagi maoshingiz qancha edi?\n\n*(Misol: 3.500.000 so'm)*", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("Oldingi ish joyingizdagi maoshingiz qancha edi?", reply_markup=ReplyKeyboardRemove())
     return PREV_SALARY
 
 async def get_prev_salary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await process_text_step(update, context, PREV_SALARY, 'prev_salary', "Bizda qancha miqdordagi maoshga ishlamoqchisiz?\n\n*(Misol: 4.500.000 - 5.000.000 so'm)*", EXPECTED_SALARY)
+    return await process_text_step(
+        update, context, PREV_SALARY, 'prev_salary',
+        "Oldingi ish joyingizdagi maoshingiz qancha edi?",
+        "Bizda qancha miqdordagi maoshga ishlamoqchisiz?",
+        EXPECTED_SALARY
+    )
 
 async def get_expected_salary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await process_text_step(update, context, EXPECTED_SALARY, 'expected_salary', "Bizning do'konda qancha muddat ishlamoqchisiz?\n\n*(Misol: 1 yildan ortiq / Doimiy)*", WORK_DURATION)
+    return await process_text_step(
+        update, context, EXPECTED_SALARY, 'expected_salary',
+        "Bizda qancha miqdordagi maoshga ishlamoqchisiz?",
+        "Bizning do'konda qancha muddat ishlamoqchisiz?",
+        WORK_DURATION
+    )
 
 async def get_work_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['work_duration'] = update.message.text
     keyboard = ReplyKeyboardMarkup([["Ha", "Yo'q"]], resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text("Ishdan keyin qolib ishlash (overtime) va majlislarga rozimisiz?", reply_markup=keyboard)
-    return OVERTIME_MEETINGS
-
-async def get_overtime_meetings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['overtime'] = update.message.text
-    await update.message.reply_text("Sog'ligingizda muammolar yo'qmi?\n\n*(Misol: Yo'q, sog'lig'im joyida)*", reply_markup=ReplyKeyboardRemove())
-    return TEAMWORK_HEALTH
-
-async def get_teamwork_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await process_text_step(
-        update, context, TEAMWORK_HEALTH, 'health',
+        update, context, WORK_DURATION, 'work_duration',
+        "Bizning do'konda qancha muddat ishlamoqchisiz?",
+        "Ishdan keyin qolib ishlash (overtime) va majlislarga rozimisiz?",
+        OVERTIME,
+        keyboard=keyboard
+    )
+
+async def get_overtime(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['overtime'] = update.message.text
+    await update.message.reply_text("Sog'ligingizda muammolar yo'qmi?", reply_markup=ReplyKeyboardRemove())
+    return HEALTH
+
+async def get_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await process_text_step(
+        update, context, HEALTH, 'health',
+        "Sog'ligingizda muammolar yo'qmi?",
         "O'zingiz haqingizda qo'shimcha ma'lumot (kuchli va ijobiy taraflaringiz):\n\n*(Misol: Kirishimli, mas'uliyatliman va muloqot qilishni yaxshi ko'raman)*",
         ADDITIONAL
     )
@@ -474,7 +594,11 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await validate_answer(question_text, answer)
 
     if not result.get("valid", True):
-        await update.message.reply_text(f"⚠️ {result.get('reason', 'Javob mos emas.')}\n\nIltimos, to'g'ri javob yozing:")
+        await update.message.reply_text(
+            f"⚠️ {result.get('reason', 'Javob mos emas.')}\n\n"
+            "Iltimos, ushbu savolga qaytadan javob bering:\nO'zingiz haqingizda qo'shimcha ma'lumot (kuchli va ijobiy taraflaringiz):\n\n*(Misol: Kirishimli, mas'uliyatliman va muloqot qilishni yaxshi ko'raman)*",
+            parse_mode="Markdown"
+        )
         return ADDITIONAL
 
     context.user_data['additional'] = answer
@@ -509,7 +633,8 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 *4. OILAVIY VA SHAXSIY HUDUD:*\n"
         f"💍 *Oilaviy ahvoli:* {context.user_data.get('marital_status')}\n"
         f"👨‍👩‍👧‍👦 *Oila a'zolari:* {context.user_data.get('family_members')}\n"
-        f"🎖 *Harbiy xizmat/Sudlanganlik:* {context.user_data.get('military_criminal')}\n"
+        f"🎖 *Harbiy xizmat:* {context.user_data.get('military')}\n"
+        f"⚖️ *Sudlanganlik:* {context.user_data.get('criminal')}\n"
         f"🌐 *Tillar:* {context.user_data.get('languages')}\n"
         f"📢 *Manba:* {context.user_data.get('how_heard')}\n"
         f"🤝 *Kafillik/Tavsiya:* {context.user_data.get('guarantor')}\n"
@@ -586,7 +711,8 @@ def main():
             TRIP_ABROAD_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_trip_abroad_details)],
             MARITAL_STATUS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_marital_status)],
             FAMILY_MEMBERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_family_members)],
-            MILITARY_CRIMINAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_military_criminal)],
+            MILITARY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_military)],
+            CRIMINAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_criminal)],
             LANGUAGES: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_languages)],
             HOW_HEARD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_how_heard)],
             GUARANTOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_guarantor)],
@@ -594,8 +720,8 @@ def main():
             PREV_SALARY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_prev_salary)],
             EXPECTED_SALARY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_expected_salary)],
             WORK_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_work_duration)],
-            OVERTIME_MEETINGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_overtime_meetings)],
-            TEAMWORK_HEALTH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_teamwork_health)],
+            OVERTIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_overtime)],
+            HEALTH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_health)],
             ADDITIONAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_additional)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
