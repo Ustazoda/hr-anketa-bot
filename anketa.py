@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 import json
 import re
@@ -30,9 +31,12 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "1168952611"))
 RAW_KEYS = os.getenv("GEMINI_API_KEY", "")
 GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 
-# Rasmiy va faol Google Gemini Modellari
-VALIDATION_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp']
-ANALYSIS_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp']
+# Hozirda faol bo'lgan Google Gemini Modellari
+# (gemini-1.5-* va gemini-2.0-flash-exp allaqachon Google tomonidan
+# butunlay o'chirilgan (404 qaytaradi) — shu sabab AI tekshiruvi va
+# tahlili doim xatolik bilan tugagan edi)
+VALIDATION_MODELS = ['gemini-3.5-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.5-flash']
+ANALYSIS_MODELS = ['gemini-3.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash']
 
 # Tayyor tugma javoblari (AI tekshiruvisiz darhol o'tkaziladi)
 PREDEFINED_BUTTONS = [
@@ -44,9 +48,18 @@ PREDEFINED_BUTTONS = [
 
 
 def call_gemini_with_fallback(contents, models):
-    """Mavjud barcha API Kalitlar va Modellarni birma-bir sinab ko'radi."""
+    """Mavjud barcha API Kalitlar va Modellarni birma-bir sinab ko'radi.
+
+    DIQQAT: bu funksiya SINXRON (blocking) tarmoq so'rovi yuboradi.
+    Uni async handlerlar ichida to'g'ridan-to'g'ri chaqirmang — asyncio
+    event loop'ni butunlay bloklab qo'yadi va shu vaqt ichida botning
+    boshqa foydalanuvchilari bilan ishlashi to'xtab qoladi. Buning
+    o'rniga har doim `await asyncio.to_thread(call_gemini_with_fallback, ...)`
+    orqali chaqiring (pastdagi validate_answer / validate_photo /
+    analyze_candidate_with_ai funksiyalarida qilingani kabi).
+    """
     last_error = None
-    
+
     if not GEMINI_API_KEYS:
         raise ValueError("GEMINI_API_KEY environment variable topilmadi!")
 
@@ -64,8 +77,8 @@ def call_gemini_with_fallback(contents, models):
             last_error = e
             logging.warning(f"API Key ishlamadi ({e}). Zaxiradagi kalitga o'tilmoqda...")
             continue
-            
-    raise last_error
+
+    raise last_error if last_error else RuntimeError("Gemini API: barcha kalit/modellar ishlamadi.")
 
 
 # === RENDER PORTI VA UPTIMEROBOT UCHUN DUMMY SERVER ===
@@ -75,7 +88,7 @@ async def start_dummy_server():
 
     app = web.Application()
     app.router.add_route("*", "/", handle_ping)
-    
+
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
@@ -99,7 +112,7 @@ async def post_init(application):
     PHOTO, POSITION, FULL_NAME, BIRTH_DATE, NATIONALITY, ADDRESS, HOUSING, PHONE,
     EDUCATION_LEVEL, EDU_DETAILS, WORK_EXP,
     VIDEO_SKILLS, EDITING_APPS, SMM_EXP, STORE_DUTIES,
-    TRIP_ABROAD, TRIP_ABROAD_DETAILS, MARITAL_STATUS, FAMILY_MEMBERS, 
+    TRIP_ABROAD, TRIP_ABROAD_DETAILS, MARITAL_STATUS, FAMILY_MEMBERS,
     MILITARY, CRIMINAL,
     LANGUAGES, HOW_HEARD, GUARANTOR, BACKGROUND_CHECK, PREV_SALARY, EXPECTED_SALARY,
     WORK_DURATION, OVERTIME, HEALTH, ADDITIONAL
@@ -136,7 +149,7 @@ QUESTIONS = {
 
 async def validate_answer(question: str, answer: str) -> dict:
     clean_ans = answer.strip().lower()
-    
+
     # Agar javob tayyor tugmalardan biri bo'lsa, AI'siz darhol o'tkazadi!
     if clean_ans in PREDEFINED_BUTTONS:
         return {"valid": True, "reason": ""}
@@ -156,7 +169,10 @@ Faqat JSON formatida javob bering:
 {{"valid": true yoki false, "reason": "agar valid false bo'lsa, qisqa sababini o'zbek tilida yozing"}}"""
 
     try:
-        response = call_gemini_with_fallback(prompt, VALIDATION_MODELS)
+        # Sinxron (blocking) Gemini chaqiruvini alohida thread'da bajaramiz,
+        # aks holda u asyncio event loop'ni bloklab, bot barcha
+        # foydalanuvchilar uchun "osilib qoladi".
+        response = await asyncio.to_thread(call_gemini_with_fallback, prompt, VALIDATION_MODELS)
         text = response.text.strip()
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
@@ -183,7 +199,7 @@ FAQAT ushbu JSON formatida javob bering:
             types.Part.from_bytes(data=bytes(photo_bytes), mime_type='image/jpeg'),
             prompt,
         ]
-        response = call_gemini_with_fallback(contents, VALIDATION_MODELS)
+        response = await asyncio.to_thread(call_gemini_with_fallback, contents, VALIDATION_MODELS)
         text = response.text.strip().lower()
 
         match = re.search(r'\{.*\}', text, re.DOTALL)
@@ -237,7 +253,7 @@ QUYIDAGI MEZONLAR BO'YICHA "ZIYNAT" DO'KONI DIREKTORI UCHUN HR TAHLIL BERING (O'
 5. **YAKUNIY BAHO VA DIREKTORGA TAVSIYA (1-10 ball)**
 """
     try:
-        response = call_gemini_with_fallback(prompt, ANALYSIS_MODELS)
+        response = await asyncio.to_thread(call_gemini_with_fallback, prompt, ANALYSIS_MODELS)
         return response.text
     except Exception as e:
         logging.error(f"Gemini AI xatoligi: {e}")
@@ -253,13 +269,13 @@ async def safe_reply_text(message, text, reply_markup=None, parse_mode="Markdown
 
 
 async def process_text_step(
-    update: Update, 
-    context: ContextTypes.DEFAULT_TYPE, 
-    current_state: int, 
-    field_name: str, 
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    current_state: int,
+    field_name: str,
     current_question_prompt: str,
-    next_question_prompt: str, 
-    next_state: int, 
+    next_question_prompt: str,
+    next_state: int,
     keyboard=None
 ):
     answer = update.message.text
@@ -400,9 +416,16 @@ async def get_nationality(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = ReplyKeyboardMarkup([["Hovli", "Dom"]], resize_keyboard=True, one_time_keyboard=True)
-    context.user_data['address'] = update.message.text
-    await safe_reply_text(update.message, "Yashash sharoitingizni tanlang:", reply_markup=keyboard)
-    return HOUSING
+    # Oldin bu yerda AI validatsiyasi chaqirilmagan edi, garchi ADDRESS
+    # savoli QUESTIONS lug'atida mavjud bo'lsa-da — endi boshqa
+    # bosqichlar kabi process_text_step orqali tekshiriladi.
+    return await process_text_step(
+        update, context, ADDRESS, 'address',
+        "Doimiy yashash joyingiz (propiska manzilingiz):\n\n*(Misol: Toshkent sh., Chilonzor tumani, 5-mavze)*",
+        "Yashash sharoitingizni tanlang:",
+        HOUSING,
+        keyboard=keyboard
+    )
 
 async def get_housing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['housing'] = update.message.text
@@ -568,10 +591,15 @@ async def get_how_heard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def get_guarantor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['guarantor'] = update.message.text
     keyboard = ReplyKeyboardMarkup([["Ha", "Yo'q"]], resize_keyboard=True, one_time_keyboard=True)
-    await safe_reply_text(update.message, "Oxirgi ish joyingizdan siz haqida surishtirishimizga rozimisiz?", reply_markup=keyboard)
-    return BACKGROUND_CHECK
+    # Oldin bu yerda ham AI validatsiyasi chaqirilmagan edi — endi tuzatildi.
+    return await process_text_step(
+        update, context, GUARANTOR, 'guarantor',
+        "Sizga kim kafillik yoki tavsiya bera oladi?\n\n*(Misol: Oxirgi ish joyimdagi rahbarim: Aliyev Vali, +998901234567)*",
+        "Oxirgi ish joyingizdan siz haqida surishtirishimizga rozimisiz?",
+        BACKGROUND_CHECK,
+        keyboard=keyboard
+    )
 
 async def get_background_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['background_check'] = update.message.text
