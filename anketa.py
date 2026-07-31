@@ -26,13 +26,22 @@ logging.basicConfig(
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1168952611"))
 
-# Gemini API Keylarini olish (Vergul bilan bir nechta key kiritilgan bo'lsa to'g'ri ajratadi)
+# Gemini API Keylarini olish
 RAW_KEYS = os.getenv("GEMINI_API_KEY", "")
 GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 
 # Rasmiy va faol Google Gemini Modellari
-VALIDATION_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp','gemini-1.0-pro','gemini-3.5-flash-lite','gemini-3.1-pro-preview']
-ANALYSIS_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp','gemini-1.0-pro','gemini-3.6-flash', 'gemini-3.5-flash-lite','gemini-3.1-pro-preview']
+VALIDATION_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp']
+ANALYSIS_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp']
+
+# Tayyor tugma javoblari (AI tekshiruvisiz darhol o'tkaziladi)
+PREDEFINED_BUTTONS = [
+    "ha", "yo'q", "uylangan", "uylanmagan", "turmush qurgan", "turmush qurmagan",
+    "o'zbek", "rus", "tojik", "hovli", "dom", "o'rta", "o'rta maxsus", "oliy",
+    "harbiyda bo'lganman", "harbiyda bo'lmaganman", "sudlanganman", "sudlanmaganman",
+    "ha, avvalgi do'konda sahifani yuritganman", "yo'q, lekin tez o'rganib olaman"
+]
+
 
 def call_gemini_with_fallback(contents, models):
     """Mavjud barcha API Kalitlar va Modellarni birma-bir sinab ko'radi."""
@@ -126,6 +135,12 @@ QUESTIONS = {
 # ==================== YUMSHATILGAN AI VALIDATSIYA ====================
 
 async def validate_answer(question: str, answer: str) -> dict:
+    clean_ans = answer.strip().lower()
+    
+    # Agar javob tayyor tugmalardan biri bo'lsa, AI'siz darhol o'tkazadi!
+    if clean_ans in PREDEFINED_BUTTONS:
+        return {"valid": True, "reason": ""}
+
     prompt = f"""Siz "Ziynat" do'koni ishga qabul anketasini tekshiruvchi bag'rikeng va tushunuvchan yordamchisiz.
 Savol: "{question}"
 Foydalanuvchi javobi: "{answer}"
@@ -135,8 +150,7 @@ Foydalanuvchi javobi savolga mantiqan mos keladimi?
 
 MUHIM QOIDALAR:
 1. Agar javob savolga umuman aloqasiz bo'lsa (masalan: so'kish, "asdfgh", "kjkhhi87to8f8ot60", yoki "shahar" degan savolga "ovqat" deb javob berilgan bo'lsa) -> valid: false.
-2. Oddiy, so'zlashuv tilidagi, qisqa yoki xatolar bilan yozilgan javoblarni ("yomon", "yo'q", "sog'lomman", "sog'lig'im joyida", "kasalligim yo'q", "ishlamaganman", "o'rganaman", "uylanmaganman", "uylangan", "harbiyda bo'lmaganman", "sudlanmaganman") HAMMA VAQT to'g'ri deb qabul qiling -> valid: true.
-3. "Sog'ligingizda muammolar yo'qmi?" savoliga nomzod faqat o'zining sog'lig'i haqida javob bersa ("yo'q", "sog'lomman", "joyida") yuz foiz to'g'ri deb qabul qiling -> valid: true.
+2. Oddiy, so'zlashuv tilidagi, qisqa yoki xatolar bilan yozilgan javoblarni ("yomon", "yo'q", "sog'lomman", "sog'lig'im joyida", "kasalligim yo'q", "ishlamaganman", "o'rganaman", "uylanmaganman", "uylangan", "harbiyda bo'lmaganman", "sudlanmaganman", "sudlanganman") HAMMA VAQT to'g'ri deb qabul qiling -> valid: true.
 
 Faqat JSON formatida javob bering:
 {{"valid": true yoki false, "reason": "agar valid false bo'lsa, qisqa sababini o'zbek tilida yozing"}}"""
@@ -172,7 +186,6 @@ FAQAT ushbu JSON formatida javob bering:
         response = call_gemini_with_fallback(contents, VALIDATION_MODELS)
         text = response.text.strip().lower()
 
-        # 1. JSON parsing urinishi
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
             try:
@@ -182,7 +195,6 @@ FAQAT ushbu JSON formatida javob bering:
             except Exception:
                 pass
 
-        # 2. Text fallback (Salbiy javoblarni birinchi tekshiramiz!)
         if "false" in text or "yo'q" in text or "mashina" in text or "avtomobil" in text or "buyum" in text:
             return {"is_person": False, "reason": "Rasmda inson yuzi ko'rinmayapti."}
         elif "true" in text or "ha" in text:
@@ -232,6 +244,14 @@ QUYIDAGI MEZONLAR BO'YICHA "ZIYNAT" DO'KONI DIREKTORI UCHUN HR TAHLIL BERING (O'
         return "⚠️ Sun'iy intellekt tahlilida xatolik yuz berdi."
 
 
+async def safe_reply_text(message, text, reply_markup=None, parse_mode="Markdown"):
+    """Telegram Markdown xatolarida bot qotmasligi uchun xavfsiz yuboruvchi funksiya."""
+    try:
+        return await message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception:
+        return await message.reply_text(text, reply_markup=reply_markup)
+
+
 async def process_text_step(
     update: Update, 
     context: ContextTypes.DEFAULT_TYPE, 
@@ -248,16 +268,15 @@ async def process_text_step(
     if question_text:
         result = await validate_answer(question_text, answer)
         if not result.get("valid", True):
-            await update.message.reply_text(
-                f"⚠️ {result.get('reason', 'Javob savolga mos emas.')}\n\n"
-                f"Iltimos, ushbu savolga qaytadan javob bering:\n{current_question_prompt}",
-                parse_mode="Markdown"
+            await safe_reply_text(
+                update.message,
+                f"⚠️ {result.get('reason', 'Javob savolga mos emas.')}\n\nIltimos, ushbu savolga qaytadan javob bering:\n{current_question_prompt}"
             )
             return current_state
 
     context.user_data[field_name] = answer
     reply_markup = keyboard if keyboard else ReplyKeyboardRemove()
-    await update.message.reply_text(next_question_prompt, reply_markup=reply_markup, parse_mode="Markdown")
+    await safe_reply_text(update.message, next_question_prompt, reply_markup=reply_markup)
     return next_state
 
 
@@ -303,24 +322,24 @@ async def handle_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== HANDLERS ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    await safe_reply_text(
+        update.message,
         "Assalomu alaykum! 'Ziynat' bijuteriya va soatlar do'koni ishga qabul anketasiga xush kelibsiz. ✨\n\n"
         "📸 Iltimos, anketaga biriktirish uchun o'zingizning rasmingizni yuboring:\n"
-        "*(Yuzingiz aniq ko'ringan tushunarli rasm yuboring)*",
-        parse_mode="Markdown"
+        "*(Yuzingiz aniq ko'ringan tushunarli rasm yuboring)*"
     )
     return PHOTO
 
 
 async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.photo:
-        await update.message.reply_text("⚠️ Rasm yuborish majburiy! Iltimos, faqat o'zingizning rasmingizni yuboring.")
+        await safe_reply_text(update.message, "⚠️ Rasm yuborish majburiy! Iltimos, faqat o'zingizning rasmingizni yuboring.")
         return PHOTO
 
     photo_file = await update.message.photo[-1].get_file()
     photo_bytes = await photo_file.download_as_bytearray()
 
-    checking_msg = await update.message.reply_text("⏳ Rasmingiz tekshirilmoqda...")
+    checking_msg = await safe_reply_text(update.message, "⏳ Rasmingiz tekshirilmoqda...")
     result = await validate_photo(photo_bytes)
 
     try:
@@ -329,7 +348,8 @@ async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     if not result.get("is_person", True):
-        await update.message.reply_text(
+        await safe_reply_text(
+            update.message,
             f"❌ {result.get('reason', 'Bu rasmda inson yuzi ko\'rinmayapti.')}\n\n"
             "Iltimos, yuzingiz aniq ko'ringan haqiqiy suratingizni yuboring:"
         )
@@ -337,9 +357,9 @@ async def get_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['photo'] = update.message.photo[-1].file_id
 
-    await update.message.reply_text(
-        "Qaysi bo'lim va lavozimga topshiryapsiz?\n\n*(Misol: Do'kon sotuvchisi va kontent-menejer)*", 
-        parse_mode="Markdown"
+    await safe_reply_text(
+        update.message,
+        "Qaysi bo'lim va lavozimga topshiryapsiz?\n\n*(Misol: Do'kon sotuvchisi va kontent-menejer)*"
     )
     return POSITION
 
@@ -381,25 +401,25 @@ async def get_nationality(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = ReplyKeyboardMarkup([["Hovli", "Dom"]], resize_keyboard=True, one_time_keyboard=True)
     context.user_data['address'] = update.message.text
-    await update.message.reply_text("Yashash sharoitingizni tanlang:", reply_markup=keyboard)
+    await safe_reply_text(update.message, "Yashash sharoitingizni tanlang:", reply_markup=keyboard)
     return HOUSING
 
 async def get_housing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['housing'] = update.message.text
     reply_keyboard = [[KeyboardButton("📱 Telefon raqamni yuborish", request_contact=True)]]
-    await update.message.reply_text("Shaxsiy mobil telefon raqamingizni yuboring:", reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True, one_time_keyboard=True))
+    await safe_reply_text(update.message, "Shaxsiy mobil telefon raqamingizni yuboring:", reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True, one_time_keyboard=True))
     return PHONE
 
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.contact.phone_number if update.message.contact else update.message.text
     context.user_data['phone'] = phone
     keyboard = ReplyKeyboardMarkup([["O'rta", "O'rta maxsus", "Oliy"]], resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text("Ma'lumotingiz darajasi:", reply_markup=keyboard)
+    await safe_reply_text(update.message, "Ma'lumotingiz darajasi:", reply_markup=keyboard)
     return EDUCATION_LEVEL
 
 async def get_education_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['education_level'] = update.message.text
-    await update.message.reply_text("Qachon va qaysi o'quv yurtini tamomlagansiz?\n\n*(Misol: 2022-yil, Toshkent Moliya Instituti)*", reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+    await safe_reply_text(update.message, "Qachon va qaysi o'quv yurtini tamomlagansiz?\n\n*(Misol: 2022-yil, Toshkent Moliya Instituti)*", reply_markup=ReplyKeyboardRemove())
     return EDU_DETAILS
 
 async def get_edudetails(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -471,11 +491,11 @@ async def get_trip_abroad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ], resize_keyboard=True, one_time_keyboard=True)
 
     if text.strip().lower() == "ha":
-        await update.message.reply_text("Chet elga qachon, qayerga va nima sababdan chiqqansiz?\n\n*(Misol: 2022-yil Turkiyaga vaqtinchalik sayohatga)*", reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+        await safe_reply_text(update.message, "Chet elga qachon, qayerga va nima sababdan chiqqansiz?\n\n*(Misol: 2022-yil Turkiyaga vaqtinchalik sayohatga)*", reply_markup=ReplyKeyboardRemove())
         return TRIP_ABROAD_DETAILS
     else:
         context.user_data['trip_abroad_details'] = "Yo'q"
-        await update.message.reply_text("Oilaviy ahvolingizni tanlang:", reply_markup=marital_keyboard)
+        await safe_reply_text(update.message, "Oilaviy ahvolingizni tanlang:", reply_markup=marital_keyboard)
         return MARITAL_STATUS
 
 async def get_trip_abroad_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -494,9 +514,9 @@ async def get_trip_abroad_details(update: Update, context: ContextTypes.DEFAULT_
 
 async def get_marital_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['marital_status'] = update.message.text
-    await update.message.reply_text(
-        "Oila a'zolaringiz haqida ma'lumot bering:\n\n"
-        "(F.I.Sh., tug'ilgan yili, ish joyi va sudlangan/sudlanmaganligi)",
+    await safe_reply_text(
+        update.message,
+        "Oila a'zolaringiz haqida ma'lumot bering:\n\n(F.I.Sh., tug'ilgan yili, ish joyi va sudlangan/sudlanmaganligi)",
         reply_markup=ReplyKeyboardRemove()
     )
     return FAMILY_MEMBERS
@@ -550,12 +570,12 @@ async def get_how_heard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_guarantor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['guarantor'] = update.message.text
     keyboard = ReplyKeyboardMarkup([["Ha", "Yo'q"]], resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text("Oxirgi ish joyingizdan siz haqida surishtirishimizga rozimisiz?", reply_markup=keyboard)
+    await safe_reply_text(update.message, "Oxirgi ish joyingizdan siz haqida surishtirishimizga rozimisiz?", reply_markup=keyboard)
     return BACKGROUND_CHECK
 
 async def get_background_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['background_check'] = update.message.text
-    await update.message.reply_text("Oldingi ish joyingizdagi maoshingiz qancha edi?", reply_markup=ReplyKeyboardRemove())
+    await safe_reply_text(update.message, "Oldingi ish joyingizdagi maoshingiz qancha edi?", reply_markup=ReplyKeyboardRemove())
     return PREV_SALARY
 
 async def get_prev_salary(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -586,7 +606,7 @@ async def get_work_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_overtime(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['overtime'] = update.message.text
-    await update.message.reply_text("Sog'ligingizda muammolar yo'qmi?", reply_markup=ReplyKeyboardRemove())
+    await safe_reply_text(update.message, "Sog'ligingizda muammolar yo'qmi?", reply_markup=ReplyKeyboardRemove())
     return HEALTH
 
 async def get_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -603,17 +623,17 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await validate_answer(question_text, answer)
 
     if not result.get("valid", True):
-        await update.message.reply_text(
-            f"⚠️ {result.get('reason', 'Javob mos emas.')}\n\n"
-            "Iltimos, ushbu savolga qaytadan javob bering:\nO'zingiz haqingizda qo'shimcha ma'lumot (kuchli va ijobiy taraflaringiz):\n\n*(Misol: Kirishimli, mas'uliyatliman va muloqot qilishni yaxshi ko'raman)*",
-            parse_mode="Markdown"
+        await safe_reply_text(
+            update.message,
+            f"⚠️ {result.get('reason', 'Javob mos emas.')}\n\nIltimos, ushbu savolga qaytadan javob bering:\nO'zingiz haqingizda qo'shimcha ma'lumot (kuchli va ijobiy taraflaringiz):\n\n*(Misol: Kirishimli, mas'uliyatliman va muloqot qilishni yaxshi ko'raman)*"
         )
         return ADDITIONAL
 
     context.user_data['additional'] = answer
     user_id = update.message.from_user.id
 
-    await update.message.reply_text(
+    await safe_reply_text(
+        update.message,
         "Rahmat! Anketangiz qabul qilindi. Sun'iy intellekt ma'lumotlaringizni tahlil qilmoqda...",
         reply_markup=ReplyKeyboardRemove()
     )
@@ -691,7 +711,7 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Anketa bekor qilindi.", reply_markup=ReplyKeyboardRemove())
+    await safe_reply_text(update.message, "Anketa bekor qilindi.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 
