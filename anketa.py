@@ -23,7 +23,7 @@ logging.basicConfig(
 )
 
 # === SOZLAMALAR ===
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7634467401:AAFrqyCa40pb-bpk1jYZBk0d4IsczVsGkhM")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7634467401:AAFkaQ1MBAcYqaXP5WNPtRdFbnbd1zQcksQ")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1168952611"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
