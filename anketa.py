@@ -25,7 +25,7 @@ logging.basicConfig(
 
 # === SOZLAMALAR ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "1168952611"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "766309793"))
 
 # Gemini API Keylarini olish
 RAW_KEYS = os.getenv("GEMINI_API_KEY", "")
