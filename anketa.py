@@ -27,6 +27,44 @@ logging.basicConfig(
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "766309793"))
 
+# 👨‍💻 DASTURCHI REJIMI — testlash paytida anketalar faqat sizga kelishi uchun
+# ==========================================================
+# /rejim buyrug'i — FAQAT shu ID uchun ishlaydi, boshqa hech kim (direktor
+# ham) uni chaqira olmaydi va uni ko'rmaydi (buyruqlar menyusiga ham
+# qo'shilmagan). "Test" rejimida barcha yangi anketalar faqat SIZGA keladi;
+# "Ishlab chiqarish" rejimida (odatiy holat) — direktorga boradi.
+DEVELOPER_ID = int(os.getenv("DEVELOPER_ID", "1168952611"))
+MODE_FILE = "bot_mode.json"
+
+def load_mode() -> str:
+    """Joriy rejimni qaytaradi: "test" yoki "production"."""
+    try:
+        if os.path.exists(MODE_FILE):
+            with open(MODE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                mode = data.get("mode", "production")
+                if mode in ("test", "production"):
+                    return mode
+    except Exception as e:
+        logging.error(f"Rejimni o'qishda xatolik: {e}")
+    return "production"
+
+def save_mode(mode: str):
+    try:
+        with open(MODE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"mode": mode}, f)
+    except Exception as e:
+        logging.error(f"Rejimni saqlashda xatolik: {e}")
+
+def get_recipient_id() -> int:
+    """Yangi anketa qayerga yuborilishini aniqlaydi."""
+    return DEVELOPER_ID if load_mode() == "test" else ADMIN_ID
+
+# ⚠️ ESLATMA: MODE_FILE serverning diskida saqlanadi. Agar Render qayta
+# deploy qilinsa (kod yangilansa), bu fayl tozalanib, rejim yana
+# "production"ga qaytadi — shuning uchun har safar kod yangilaganingizdan
+# keyin /rejim orqali joriy holatni tekshirib oling.
+
 # Gemini API Keylarini olish
 RAW_KEYS = os.getenv("GEMINI_API_KEY", "")
 GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
@@ -90,6 +128,8 @@ async def post_init(application):
     commands = [
         BotCommand("start", "Anketani boshlash 🚀"),
         BotCommand("cancel", "Anketani bekor qilish ❌")
+        # ❗ "/rejim" buyrug'i ATAYLAB shu ro'yxatga qo'shilmagan — u faqat
+        # dasturchiga ma'lum bo'lishi kerak, "/" menyusida ko'rinmasin.
     ]
     await application.bot.set_my_commands(commands)
     await start_dummy_server()
@@ -282,6 +322,53 @@ async def safe_send_message(bot, chat_id, text, parse_mode="Markdown", reply_mar
         await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
     except Exception:
         await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+
+
+# ==================== DASTURCHI REJIMI: BUYRUQ VA TUGMALAR ====================
+
+async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    🔒 Bu buyruq FAQAT DEVELOPER_ID uchun ishlaydi. Boshqa har qanday
+    foydalanuvchi (direktor ham) buni chaqirsa, bot hech narsa demay
+    jim turadi — bu buyruqning borligi ham bilinmaydi.
+    """
+    if update.message.from_user.id != DEVELOPER_ID:
+        return
+
+    current = load_mode()
+    if current == "test":
+        status_text = "🧪 Hozirgi rejim: *TEST*\n\nBarcha yangi anketalar faqat SIZGA keladi, direktor ularni ko'rmaydi."
+    else:
+        status_text = "🚀 Hozirgi rejim: *ISHLAB CHIQARISH*\n\nBarcha yangi anketalar direktorga yuborilyapti."
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧪 Test rejimi (faqat menga)", callback_data="mode_test")],
+        [InlineKeyboardButton("🚀 Ishlab chiqarish (direktorga)", callback_data="mode_prod")],
+    ])
+    await update.message.reply_text(status_text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+async def handle_mode_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != DEVELOPER_ID:
+        # Boshqa hech kim bu tugmani bosolmaydi (amalda ko'rmaydi ham,
+        # chunki bu xabar faqat shaxsiy chatda, faqat dasturchiga yuboriladi).
+        await query.answer()
+        return
+
+    new_mode = "test" if query.data == "mode_test" else "production"
+    save_mode(new_mode)
+    await query.answer("✅ Rejim yangilandi.", show_alert=True)
+
+    if new_mode == "test":
+        text = "🧪 *TEST rejimi yoqildi.*\n\nEndi barcha yangi anketalar faqat sizga keladi, direktor ularni ko'rmaydi."
+    else:
+        text = "🚀 *ISHLAB CHIQARISH rejimi yoqildi.*\n\nEndi barcha yangi anketalar direktorga boradi."
+
+    try:
+        await query.edit_message_text(text, parse_mode="Markdown")
+    except Exception:
+        pass
 
 
 # ==================== TUGMALAR VA QAROR QABUL QILISH ====================
@@ -688,21 +775,33 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ])
 
+    # 👨‍💻 Rejimga qarab qayerga yuborilishini aniqlaymiz: "test" bo'lsa —
+    # faqat dasturchiga, aks holda (odatiy holat) — direktorga.
+    recipient_id = get_recipient_id()
+    test_mode_active = (recipient_id == DEVELOPER_ID)
+
     try:
         photo = context.user_data.get('photo')
         if photo:
+            caption = f"📥 *YANGI NOMZOD:* {context.user_data.get('fullname')}\n🎯 *Lavozim:* {context.user_data.get('position')}"
+            if test_mode_active:
+                caption = "🧪 *[TEST REJIMI — direktorga yuborilmadi]*\n\n" + caption
             await context.bot.send_photo(
-                chat_id=ADMIN_ID,
+                chat_id=recipient_id,
                 photo=photo,
-                caption=f"📥 *YANGI NOMZOD:* {context.user_data.get('fullname')}\n🎯 *Lavozim:* {context.user_data.get('position')}",
+                caption=caption,
                 parse_mode="Markdown"
             )
 
-        await safe_send_message(context.bot, ADMIN_ID, summary_text)
-        await safe_send_message(context.bot, ADMIN_ID, ai_report_text, reply_markup=decision_keyboard)
+        final_summary = summary_text
+        if test_mode_active:
+            final_summary = "🧪 *[TEST REJIMI — direktorga yuborilmadi]*\n\n" + summary_text
+
+        await safe_send_message(context.bot, recipient_id, final_summary)
+        await safe_send_message(context.bot, recipient_id, ai_report_text, reply_markup=decision_keyboard)
 
     except Exception as e:
-        logging.error(f"Adminga yuborishda xatolik: {e}")
+        logging.error(f"Yuborishda xatolik: {e}")
 
     return ConversationHandler.END
 
@@ -753,7 +852,14 @@ def main():
     )
 
     app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(handle_decision))
+
+    # 🔒 Yashirin dasturchi buyrug'i va uning tugmalari
+    app.add_handler(CommandHandler("rejim", cmd_mode))
+    app.add_handler(CallbackQueryHandler(handle_mode_decision, pattern=r"^mode_"))
+
+    # Nomzodni qabul qilish/rad etish tugmalari — pattern qo'shildi, shunda
+    # yuqoridagi "mode_" callbacklari bilan aralashib ketmaydi
+    app.add_handler(CallbackQueryHandler(handle_decision, pattern=r"^(accept_|reject_|done$)"))
 
     print("Ziynat Do'koni Anketa Boti va Gemini AI ishga tushdi...")
     app.run_polling()
