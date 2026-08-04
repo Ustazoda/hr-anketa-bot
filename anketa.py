@@ -32,9 +32,6 @@ RAW_KEYS = os.getenv("GEMINI_API_KEY", "")
 GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 
 # Hozirda faol bo'lgan Google Gemini Modellari
-# (gemini-1.5-* va gemini-2.0-flash-exp allaqachon Google tomonidan
-# butunlay o'chirilgan (404 qaytaradi) — shu sabab AI tekshiruvi va
-# tahlili doim xatolik bilan tugagan edi)
 VALIDATION_MODELS = ['gemini-3.5-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.5-flash']
 ANALYSIS_MODELS = ['gemini-3.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash']
 
@@ -48,16 +45,7 @@ PREDEFINED_BUTTONS = [
 
 
 def call_gemini_with_fallback(contents, models):
-    """Mavjud barcha API Kalitlar va Modellarni birma-bir sinab ko'radi.
-
-    DIQQAT: bu funksiya SINXRON (blocking) tarmoq so'rovi yuboradi.
-    Uni async handlerlar ichida to'g'ridan-to'g'ri chaqirmang — asyncio
-    event loop'ni butunlay bloklab qo'yadi va shu vaqt ichida botning
-    boshqa foydalanuvchilari bilan ishlashi to'xtab qoladi. Buning
-    o'rniga har doim `await asyncio.to_thread(call_gemini_with_fallback, ...)`
-    orqali chaqiring (pastdagi validate_answer / validate_photo /
-    analyze_candidate_with_ai funksiyalarida qilingani kabi).
-    """
+    """Mavjud barcha API Kalitlar va Modellarni birma-bir sinab ko'radi."""
     last_error = None
 
     if not GEMINI_API_KEYS:
@@ -107,16 +95,16 @@ async def post_init(application):
     await start_dummy_server()
 
 
-# === BOSQICHLAR ===
+# === BOSQICHLAR (Tillar olib tashlandi, 30 ta qoldi: 0 dan 29 gacha) ===
 (
     PHOTO, POSITION, FULL_NAME, BIRTH_DATE, NATIONALITY, ADDRESS, HOUSING, PHONE,
     EDUCATION_LEVEL, EDU_DETAILS, WORK_EXP,
     VIDEO_SKILLS, EDITING_APPS, SMM_EXP, STORE_DUTIES,
     TRIP_ABROAD, TRIP_ABROAD_DETAILS, MARITAL_STATUS, FAMILY_MEMBERS,
     MILITARY, CRIMINAL,
-    LANGUAGES, HOW_HEARD, GUARANTOR, BACKGROUND_CHECK, PREV_SALARY, EXPECTED_SALARY,
+    HOW_HEARD, GUARANTOR, BACKGROUND_CHECK, PREV_SALARY, EXPECTED_SALARY,
     WORK_DURATION, OVERTIME, HEALTH, ADDITIONAL
-) = range(31)
+) = range(30)
 
 QUESTIONS = {
     POSITION: "Qaysi bo'lim va lavozimga topshiryapsiz?",
@@ -134,7 +122,6 @@ QUESTIONS = {
     FAMILY_MEMBERS: "Oila a'zolaringiz haqida ma'lumot",
     MILITARY: "Harbiy xizmatda bo'lganmisiz",
     CRIMINAL: "Sudlanganlik holatingiz",
-    LANGUAGES: "Xorijiy tillarni bilish darajangiz",
     HOW_HEARD: "Bizning 'Ziynat' do'konimiz haqida qayerdan eshitdingiz?",
     GUARANTOR: "Kafillik yoki tavsiya bera oladigan shaxs",
     PREV_SALARY: "Oldingi ish joyingizdagi maoshingiz",
@@ -150,7 +137,6 @@ QUESTIONS = {
 async def validate_answer(question: str, answer: str) -> dict:
     clean_ans = answer.strip().lower()
 
-    # Agar javob tayyor tugmalardan biri bo'lsa, AI'siz darhol o'tkazadi!
     if clean_ans in PREDEFINED_BUTTONS:
         return {"valid": True, "reason": ""}
 
@@ -169,9 +155,6 @@ Faqat JSON formatida javob bering:
 {{"valid": true yoki false, "reason": "agar valid false bo'lsa, qisqa sababini o'zbek tilida yozing"}}"""
 
     try:
-        # Sinxron (blocking) Gemini chaqiruvini alohida thread'da bajaramiz,
-        # aks holda u asyncio event loop'ni bloklab, bot barcha
-        # foydalanuvchilar uchun "osilib qoladi".
         response = await asyncio.to_thread(call_gemini_with_fallback, prompt, VALIDATION_MODELS)
         text = response.text.strip()
         match = re.search(r'\{.*\}', text, re.DOTALL)
@@ -239,7 +222,6 @@ NOMZOD MA'LUMOTLARI:
 - 🛍 Do'kon vazifalariga tayyorligi: {user_data.get('store_duties')}
 - Oilaviy ahvoli va A'zolari: {user_data.get('marital_status')} / {user_data.get('family_members')}
 - Harbiy xizmat / Sudlanganlik: {user_data.get('military')} / {user_data.get('criminal')}
-- Tillar: {user_data.get('languages')}
 - Oldingi va Kutilayotgan maosh: {user_data.get('prev_salary')} / {user_data.get('expected_salary')}
 - Ishlash muddati / Qolib ishlash: {user_data.get('work_duration')} / {user_data.get('overtime')}
 - Sog'lig'i: {user_data.get('health')}
@@ -261,7 +243,6 @@ QUYIDAGI MEZONLAR BO'YICHA "ZIYNAT" DO'KONI DIREKTORI UCHUN HR TAHLIL BERING (O'
 
 
 async def safe_reply_text(message, text, reply_markup=None, parse_mode="Markdown"):
-    """Telegram Markdown xatolarida bot qotmasligi uchun xavfsiz yuboruvchi funksiya."""
     try:
         return await message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except Exception:
@@ -416,9 +397,6 @@ async def get_nationality(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = ReplyKeyboardMarkup([["Hovli", "Dom"]], resize_keyboard=True, one_time_keyboard=True)
-    # Oldin bu yerda AI validatsiyasi chaqirilmagan edi, garchi ADDRESS
-    # savoli QUESTIONS lug'atida mavjud bo'lsa-da — endi boshqa
-    # bosqichlar kabi process_text_step orqali tekshiriladi.
     return await process_text_step(
         update, context, ADDRESS, 'address',
         "Doimiy yashash joyingiz (propiska manzilingiz):\n\n*(Misol: Toshkent sh., Chilonzor tumani, 5-mavze)*",
@@ -567,17 +545,10 @@ async def get_military(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def get_criminal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Tillar bosqichi olib tashlandi, sudlanganlikdan keyin to'g'ridan-to'g'ri HOW_HEARD ga o'tadi
     return await process_text_step(
         update, context, CRIMINAL, 'criminal',
         "Sudlanganlik holatingiz:",
-        "Qaysi tillarni bilasiz va qaysi darajada?\n\n*(Misol: O'zbek tili - a'lo, Rus tili - so'zlashuv darajasida)*",
-        LANGUAGES
-    )
-
-async def get_languages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await process_text_step(
-        update, context, LANGUAGES, 'languages',
-        "Qaysi tillarni bilasiz va qaysi darajada?\n\n*(Misol: O'zbek tili - a'lo, Rus tili - so'zlashuv darajasida)*",
         "Bizning 'Ziynat' do'konimiz haqida qayerdan eshitdingiz?",
         HOW_HEARD
     )
@@ -592,7 +563,6 @@ async def get_how_heard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_guarantor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = ReplyKeyboardMarkup([["Ha", "Yo'q"]], resize_keyboard=True, one_time_keyboard=True)
-    # Oldin bu yerda ham AI validatsiyasi chaqirilmagan edi — endi tuzatildi.
     return await process_text_step(
         update, context, GUARANTOR, 'guarantor',
         "Sizga kim kafillik yoki tavsiya bera oladi?\n\n*(Misol: Oxirgi ish joyimdagi rahbarim: Aliyev Vali, +998901234567)*",
@@ -692,7 +662,6 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👨‍👩‍👧‍👦 *Oila a'zolari:* {context.user_data.get('family_members')}\n"
         f"🎖 *Harbiy xizmat:* {context.user_data.get('military')}\n"
         f"⚖️ *Sudlanganlik:* {context.user_data.get('criminal')}\n"
-        f"🌐 *Tillar:* {context.user_data.get('languages')}\n"
         f"📢 *Manba:* {context.user_data.get('how_heard')}\n"
         f"🤝 *Kafillik/Tavsiya:* {context.user_data.get('guarantor')}\n"
         f"🔍 *Surishtirishga roziligi:* {context.user_data.get('background_check')}\n\n"
@@ -770,7 +739,6 @@ def main():
             FAMILY_MEMBERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_family_members)],
             MILITARY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_military)],
             CRIMINAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_criminal)],
-            LANGUAGES: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_languages)],
             HOW_HEARD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_how_heard)],
             GUARANTOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_guarantor)],
             BACKGROUND_CHECK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_background_check)],
