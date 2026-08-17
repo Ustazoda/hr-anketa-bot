@@ -377,10 +377,7 @@ QUESTIONS = {
     EDITING_APPS: "Montaj ilovalari (CapCut va b.)",
     SMM_EXP: "Instagram/Telegram va mijozlarga javob berish",
     STORE_DUTIES: "Do'kon vazifalari va tovarlar bilan ishlash",
-    TRIP_ABROAD_DETAILS: "Chet el safarlari tafsiloti",
     FAMILY_MEMBERS: "Oila a'zolaringiz haqida ma'lumot",
-    MILITARY: "Harbiy xizmatda bo'lganmisiz",
-    CRIMINAL: "Sudlanganlik holatingiz",
     HOW_HEARD: "Bizning 'Ziynat' do'konimiz haqida qayerdan eshitdingiz?",
     GUARANTOR: "Kafillik yoki tavsiya bera oladigan shaxs",
     PREV_SALARY: "Oldingi ish joyingizdagi maoshingiz",
@@ -593,7 +590,6 @@ NOMZOD MA'LUMOTLARI:
 - SMM va Mijozlar bilan muloqot: {user_data.get('smm_exp')}
 - Do'kon vazifalariga tayyorligi: {user_data.get('store_duties')}
 - Oilaviy ahvoli va A'zolari: {user_data.get('marital_status')} / {user_data.get('family_members')}
-- Harbiy xizmat / Sudlanganlik: {user_data.get('military')} / {user_data.get('criminal')}
 - Oldingi va Kutilayotgan maosh: {user_data.get('prev_salary')} / {user_data.get('expected_salary')}
 - Ishlash muddati / Qolib ishlash: {user_data.get('work_duration')} / {user_data.get('overtime')}
 - Sog'lig'i: {user_data.get('health')}
@@ -1037,8 +1033,8 @@ async def get_smm_exp(update, context):
 async def get_store_duties(update, context):
     return await process_text_step(
         update, context, STORE_DUTIES, "store_duties",
-        P_STORE, P_TRIP, TRIP_ABROAD,
-        keyboard=KB_YES_NO,
+        P_STORE, P_MARITAL, MARITAL_STATUS,
+        keyboard=KB_MARITAL,
         current_keyboard=KB_YES_NO,
     )
 
@@ -1048,31 +1044,6 @@ def _is_yes(text: str) -> bool:
     if t.startswith(("yo'q", "yoq", "yo`q", "yo‘q", "нет")):
         return False
     return bool(re.match(r"^(ha|xa|да|yes)\b", t)) or t in ("ha", "xa")
-
-
-async def get_trip_abroad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    if not text:
-        await reply(update.message, P_TRIP, reply_markup=KB_YES_NO)
-        return TRIP_ABROAD
-
-    context.user_data["trip_abroad"] = text
-
-    if _is_yes(text):
-        await reply(update.message, P_TRIP_DETAILS, reply_markup=ReplyKeyboardRemove())
-        return TRIP_ABROAD_DETAILS
-
-    context.user_data["trip_abroad_details"] = "Yo'q"
-    await reply(update.message, P_MARITAL, reply_markup=KB_MARITAL)
-    return MARITAL_STATUS
-
-
-async def get_trip_abroad_details(update, context):
-    return await process_text_step(
-        update, context, TRIP_ABROAD_DETAILS, "trip_abroad_details",
-        P_TRIP_DETAILS, P_MARITAL, MARITAL_STATUS,
-        keyboard=KB_MARITAL,
-    )
 
 
 async def get_marital_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1088,25 +1059,7 @@ async def get_marital_status(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def get_family_members(update, context):
     return await process_text_step(
         update, context, FAMILY_MEMBERS, "family_members",
-        P_FAMILY, P_MILITARY, MILITARY,
-        keyboard=KB_MILITARY,
-    )
-
-
-async def get_military(update, context):
-    return await process_text_step(
-        update, context, MILITARY, "military",
-        P_MILITARY, P_CRIMINAL, CRIMINAL,
-        keyboard=KB_CRIMINAL,
-        current_keyboard=KB_MILITARY,
-    )
-
-
-async def get_criminal(update, context):
-    return await process_text_step(
-        update, context, CRIMINAL, "criminal",
-        P_CRIMINAL, P_HOW_HEARD, HOW_HEARD,
-        current_keyboard=KB_CRIMINAL,
+        P_FAMILY, P_HOW_HEARD, HOW_HEARD,
     )
 
 
@@ -1197,11 +1150,8 @@ def build_summary(d: dict) -> str:
         f"💬 <b>Instagram/Telegram/Mijozlar:</b> {esc(d.get('smm_exp'))}\n"
         f"🛍 <b>Do'kon vazifalariga tayyorligi:</b> {esc(d.get('store_duties'))}\n\n"
         "📌 <b>4. OILAVIY VA SHAXSIY:</b>\n"
-        f"✈️ <b>Chet el safari:</b> {esc(d.get('trip_abroad'))} — {esc(d.get('trip_abroad_details'))}\n"
         f"💍 <b>Oilaviy ahvoli:</b> {esc(d.get('marital_status'))}\n"
         f"👨‍👩‍👧‍👦 <b>Oila a'zolari:</b> {esc(d.get('family_members'))}\n"
-        f"🎖 <b>Harbiy xizmat:</b> {esc(d.get('military'))}\n"
-        f"⚖️ <b>Sudlanganlik:</b> {esc(d.get('criminal'))}\n"
         f"📢 <b>Manba:</b> {esc(d.get('how_heard'))}\n"
         f"🤝 <b>Kafillik/Tavsiya:</b> {esc(d.get('guarantor'))}\n"
         f"🔍 <b>Surishtirishga roziligi:</b> {esc(d.get('background_check'))}\n\n"
@@ -1426,12 +1376,8 @@ def main():
             EDITING_APPS: [MessageHandler(text_only, get_editing_apps)],
             SMM_EXP: [MessageHandler(text_only, get_smm_exp)],
             STORE_DUTIES: [MessageHandler(text_only, get_store_duties)],
-            TRIP_ABROAD: [MessageHandler(text_only, get_trip_abroad)],
-            TRIP_ABROAD_DETAILS: [MessageHandler(text_only, get_trip_abroad_details)],
             MARITAL_STATUS: [MessageHandler(text_only, get_marital_status)],
             FAMILY_MEMBERS: [MessageHandler(text_only, get_family_members)],
-            MILITARY: [MessageHandler(text_only, get_military)],
-            CRIMINAL: [MessageHandler(text_only, get_criminal)],
             HOW_HEARD: [MessageHandler(text_only, get_how_heard)],
             GUARANTOR: [MessageHandler(text_only, get_guarantor)],
             BACKGROUND_CHECK: [MessageHandler(text_only, get_background_check)],
