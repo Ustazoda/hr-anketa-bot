@@ -28,8 +28,10 @@ import os
 import re
 import json
 import html
+import time
 import asyncio
 import logging
+from datetime import date
 
 from aiohttp import web
 from google import genai
@@ -93,13 +95,27 @@ GEMINI_API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 # API kalitlar uchun yopilgan (404 "no longer available to new users").
 # Agar kelajakda yana 404 chiqsa — /modellar buyrug'i orqali kalitingizga
 # ochiq bo'lgan modellar ro'yxatini ko'ring va shu ro'yxatni yangilang.
-VALIDATION_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash"]
-ANALYSIS_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
+VALIDATION_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-flash-lite-latest",  # zaxira: Google o'zi eng yangisiga yo'naltiradi
+]
+ANALYSIS_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-latest",  # zaxira: Google o'zi eng yangisiga yo'naltiradi
+]
 
 # AI chaqiruvlari uchun timeout (soniya)
 VALIDATION_TIMEOUT = 25
 PHOTO_TIMEOUT = 35
 ANALYSIS_TIMEOUT = 120
+
+# 👶 Ishga qabul qilinadigan eng kichik yosh.
+# Nomzod shundan kichik bo'lsagina "yoshi kichik" hisoblanadi.
+MIN_AGE = 16
 
 # Telegram xabar limiti 4096 — zaxira bilan
 TG_LIMIT = 3800
@@ -138,8 +154,18 @@ def save_mode(mode: str) -> None:
         logger.error("Rejimni saqlashda xatolik: %s", e)
 
 
-def get_recipient_id() -> int:
-    return DEVELOPER_ID if load_mode() == "test" else ADMIN_ID
+def get_recipients() -> list:
+    """Anketa kimlarga yuborilishini aniqlaydi.
+
+    • "test"       -> faqat dasturchiga (direktor ko'rmaydi)
+    • "production" -> direktorga HAM, dasturchiga HAM
+    """
+    if load_mode() == "test":
+        return [DEVELOPER_ID]
+    recipients = [ADMIN_ID]
+    if DEVELOPER_ID != ADMIN_ID:
+        recipients.append(DEVELOPER_ID)
+    return recipients
 
 
 # ==========================================================================
@@ -155,39 +181,64 @@ def _get_client(api_key: str):
     return _client_cache[api_key]
 
 
-def call_gemini_with_fallback(contents, models):
-    """Barcha kalit va modellarni birma-bir sinaydi."""
+TRANSIENT_CODES = ("503", "429", "500", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "INTERNAL")
+
+
+def _is_transient(err: Exception) -> bool:
+    """503 / 429 kabi vaqtinchalik xatolarni aniqlaydi."""
+    text = str(err)
+    return any(code in text for code in TRANSIENT_CODES)
+
+
+def call_gemini_with_fallback(contents, models, attempts: int = 2):
+    """Barcha kalit va modellarni birma-bir sinaydi.
+
+    Agar hammasi vaqtinchalik xato (503/429) bersa, biroz kutib qayta uriniladi.
+    """
     if not GEMINI_API_KEYS:
         raise ValueError("GEMINI_API_KEY topilmadi!")
 
     errors = []
-    for idx, api_key in enumerate(GEMINI_API_KEYS, start=1):
-        try:
-            client = _get_client(api_key)
-        except Exception as e:
-            errors.append(f"Kalit #{idx}: client yaratilmadi — {e}")
-            logger.warning("Client yaratilmadi: %s", e)
-            continue
+    for attempt in range(1, attempts + 1):
+        transient_only = True
 
-        for model_name in models:
+        for idx, api_key in enumerate(GEMINI_API_KEYS, start=1):
             try:
-                return client.models.generate_content(
-                    model=model_name, contents=contents
-                )
+                client = _get_client(api_key)
             except Exception as e:
-                msg = str(e).replace("\n", " ")[:300]
-                errors.append(f"Kalit #{idx} / {model_name}: {msg}")
-                logger.warning("Model '%s' ishlamadi: %s", model_name, e)
+                transient_only = False
+                errors.append(f"Kalit #{idx}: client yaratilmadi — {e}")
+                logger.warning("Client yaratilmadi: %s", e)
                 continue
 
-    detail = " | ".join(errors) if errors else "noma'lum sabab"
+            for model_name in models:
+                try:
+                    return client.models.generate_content(
+                        model=model_name, contents=contents
+                    )
+                except Exception as e:
+                    if not _is_transient(e):
+                        transient_only = False
+                    msg = str(e).replace("\n", " ")[:300]
+                    errors.append(f"[{attempt}] Kalit #{idx} / {model_name}: {msg}")
+                    logger.warning("Model '%s' ishlamadi: %s", model_name, e)
+                    continue
+
+        # Hammasi 503/429 bo'lsa — kutib qayta urinamiz
+        if transient_only and attempt < attempts:
+            logger.info("Barcha modellar band. %s-urinishdan keyin kutilmoqda...", attempt)
+            time.sleep(5)
+            continue
+        break
+
+    detail = " | ".join(errors[-6:]) if errors else "noma'lum sabab"
     raise RuntimeError(f"Gemini ishlamadi. Tafsilot: {detail}")
 
 
-async def _gemini_async(contents, models, timeout: int):
+async def _gemini_async(contents, models, timeout: int, attempts: int = 1):
     """Gemini'ni thread'da, timeout bilan chaqiradi."""
     return await asyncio.wait_for(
-        asyncio.to_thread(call_gemini_with_fallback, contents, models),
+        asyncio.to_thread(call_gemini_with_fallback, contents, models, attempts),
         timeout=timeout,
     )
 
@@ -337,18 +388,11 @@ P_STORE = (
     "🛍 Do'konda tovarlarni (soat/bijuteriya) chiroyli joylashtirish, mijozlar "
     "bilan muloqot qilish va video olish vazifalarini bajara olasizmi?"
 )
-P_TRIP = "Chet el safariga chiqqanmisiz?"
-P_TRIP_DETAILS = (
-    "Chet elga qachon, qayerga va nima sababdan chiqqansiz?\n\n"
-    "<i>(Misol: 2022-yil Turkiyaga vaqtinchalik sayohatga)</i>"
-)
 P_MARITAL = "Oilaviy ahvolingizni tanlang:"
 P_FAMILY = (
     "Oila a'zolaringiz haqida ma'lumot bering:\n\n"
     "<i>(F.I.Sh., tug'ilgan yili, ish joyi va sudlangan/sudlanmaganligi)</i>"
 )
-P_MILITARY = "Harbiy xizmatda bo'lganmisiz?"
-P_CRIMINAL = "Sudlanganlik holatingiz:"
 P_HOW_HEARD = "Bizning 'Ziynat' do'konimiz haqida qayerdan eshitdingiz?"
 P_GUARANTOR = (
     "Sizga kim kafillik yoki tavsiya bera oladi?\n\n"
@@ -416,14 +460,6 @@ KB_MARITAL = ReplyKeyboardMarkup(
     resize_keyboard=True,
     one_time_keyboard=True,
 )
-KB_MILITARY = ReplyKeyboardMarkup(
-    [["Harbiyda bo'lganman", "Harbiyda bo'lmaganman"]],
-    resize_keyboard=True,
-    one_time_keyboard=True,
-)
-KB_CRIMINAL = ReplyKeyboardMarkup(
-    [["Sudlanmaganman", "Sudlanganman"]], resize_keyboard=True, one_time_keyboard=True
-)
 
 
 # ==========================================================================
@@ -432,6 +468,33 @@ KB_CRIMINAL = ReplyKeyboardMarkup(
 DATE_RE = re.compile(r"(\d{1,2})\s*[.\-/\s]\s*(\d{1,2})\s*[.\-/\s]\s*(\d{4})")
 YEAR_RE = re.compile(r"\b(19[4-9]\d|200\d|201[0-2])\b")
 VOWELS = "aeiouаеёиоуыэюяўоʻ"
+
+
+def parse_birthdate(text: str):
+    """Matndan tug'ilgan sanani ajratib oladi. Topilmasa None qaytaradi."""
+    m = DATE_RE.search(text or "")
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            return date(y, mo, d)
+        except ValueError:
+            return None
+    m2 = YEAR_RE.search(text or "")
+    if m2:
+        # Faqat yil berilgan bo'lsa — o'rtacha sana bilan taxminlaymiz
+        return date(int(m2.group(1)), 7, 1)
+    return None
+
+
+def calculate_age(born: date) -> int:
+    today = date.today()
+    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+
+
+def get_age(birthdate_text: str):
+    """Anketadagi sana matnidan yoshni qaytaradi (aniqlanmasa None)."""
+    born = parse_birthdate(birthdate_text)
+    return calculate_age(born) if born else None
 
 
 def looks_like_gibberish(text: str) -> bool:
@@ -454,11 +517,22 @@ def validate_birthdate(answer: str):
         d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
         if not (1 <= d <= 31 and 1 <= mo <= 12):
             return False, "Sana noto'g'ri. Kun 1-31, oy 1-12 oralig'ida bo'lishi kerak.", answer
-        if not (1940 <= y <= 2012):
+        try:
+            born = date(y, mo, d)
+        except ValueError:
+            return False, "Bunday sana mavjud emas. Iltimos, tekshirib qayta yozing.", answer
+
+        # ⚠️ Yosh sababli anketa TO'XTATILMAYDI — istalgan yoshdagi nomzod
+        # anketani to'liq to'ldira oladi. Yosh faqat AI xulosasida hisobga
+        # olinadi (MIN_AGE dan kichik bo'lsa, tahlilda eslatib o'tiladi).
+        age = calculate_age(born)
+        if age < 0 or age > 90:
             return False, "Tug'ilgan yilingiz noto'g'ri ko'rinyapti. Iltimos, tekshirib qayta yozing.", answer
         return True, "", f"{d:02d}.{mo:02d}.{y}"
+
     if YEAR_RE.search(answer) and len(answer.strip()) <= 30:
         return True, "", answer.strip()
+
     return False, "Tug'ilgan sanangizni KUN.OY.YIL ko'rinishida yozing.", answer
 
 
@@ -574,6 +648,12 @@ FAQAT ushbu JSON formatida javob bering:
 
 
 async def analyze_candidate_with_ai(user_data: dict) -> str:
+    age = get_age(user_data.get("birthdate") or "")
+    if age is None:
+        age_line = "aniqlanmadi"
+    else:
+        age_line = f"{age} yosh (bugungi sana: {date.today():%d.%m.%Y})"
+
     prompt = f"""
 Siz "ZIYNAT" bijuteriya va soatlar do'konining HR menejerisiz.
 Do'konda xodimlar mijozlarga soat va zargarlik buyumlarini sotishi, tovarlarni chiroyli
@@ -582,7 +662,7 @@ hamda Instagram/Telegram'da mijozlar bilan muloqot qilishi kerak.
 
 NOMZOD MA'LUMOTLARI:
 - F.I.Sh va Lavozim: {user_data.get('fullname')} / {user_data.get('position')}
-- Yoshi, Millati va Manzili: {user_data.get('birthdate')} / {user_data.get('nationality')} / {user_data.get('address')} ({user_data.get('housing')})
+- Tug'ilgan sanasi va YOSHI: {user_data.get('birthdate')} — {age_line}\n- Millati va Manzili: {user_data.get('nationality')} / {user_data.get('address')} ({user_data.get('housing')})
 - Tel: {user_data.get('phone')}
 - Ma'lumoti va Ish tajribasi: {user_data.get('education_level')} / {user_data.get('edu_details')} | Tajriba: {user_data.get('work_exp')}
 - Video olish va Telefon: {user_data.get('video_skills')}
@@ -595,6 +675,17 @@ NOMZOD MA'LUMOTLARI:
 - Sog'lig'i: {user_data.get('health')}
 - Qo'shimcha sifatlari: {user_data.get('additional')}
 
+❗️ YOSH BO'YICHA QAT'IY QOIDA:
+Nomzodning yoshi yuqorida ANIQ ko'rsatilgan — uni o'zingiz qayta hisoblamang
+va tug'ilgan yilidan taxmin qilmang.
+- Agar yoshi {MIN_AGE} yoki undan KATTA bo'lsa: yoshini kamchilik, zaif tomon
+  yoki rad etish sababi sifatida UMUMAN ko'rsatmang. "Yosh", "yoshi kichik",
+  "tajribasiz yosh" kabi izohlar bermang. Faqat malaka, tajriba va
+  ko'nikmalarga qarab baho bering.
+- Agar yoshi {MIN_AGE} dan KICHIK bo'lsa: xulosada buni ochiq eslatib o'ting
+  ("nomzodning yoshi kichik") va direktor e'tiboriga havola qiling.
+  Baribir to'liq tahlil bering — boshqa mezonlarni ham baholang.
+
 QUYIDAGI MEZONLAR BO'YICHA "ZIYNAT" DO'KONI DIREKTORI UCHUN HR TAHLIL BERING
 (O'zbek tilida, jami 350 so'zdan oshmasin):
 1. **Sotuv va Mijozlar bilan muloqot salohiyati (1-10 ball)**
@@ -604,7 +695,7 @@ QUYIDAGI MEZONLAR BO'YICHA "ZIYNAT" DO'KONI DIREKTORI UCHUN HR TAHLIL BERING
 5. **YAKUNIY BAHO VA DIREKTORGA TAVSIYA (1-10 ball)**
 """
     try:
-        response = await _gemini_async(prompt, ANALYSIS_MODELS, ANALYSIS_TIMEOUT)
+        response = await _gemini_async(prompt, ANALYSIS_MODELS, ANALYSIS_TIMEOUT, attempts=2)
         return response.text or "⚠️ AI bo'sh javob qaytardi."
     except asyncio.TimeoutError:
         logger.error("AI tahlili timeout.")
@@ -689,13 +780,13 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         status = (
             "🚀 Hozirgi rejim: <b>ISHLAB CHIQARISH</b>\n\n"
-            "Barcha yangi anketalar direktorga yuborilyapti."
+            "Barcha yangi anketalar <b>direktorga ham, sizga ham</b> yuborilyapti."
         )
 
     keyboard = InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("🧪 Test rejimi (faqat menga)", callback_data="mode_test")],
-            [InlineKeyboardButton("🚀 Ishlab chiqarish (direktorga)", callback_data="mode_prod")],
+            [InlineKeyboardButton("🚀 Ishlab chiqarish (direktor + men)", callback_data="mode_prod")],
         ]
     )
     await message.reply_text(status, reply_markup=keyboard, parse_mode=ParseMode.HTML)
@@ -792,7 +883,8 @@ async def handle_mode_decision(update: Update, context: ContextTypes.DEFAULT_TYP
     text = (
         "🧪 <b>TEST rejimi yoqildi.</b>\n\nEndi barcha yangi anketalar faqat sizga keladi."
         if new_mode == "test"
-        else "🚀 <b>ISHLAB CHIQARISH rejimi yoqildi.</b>\n\nEndi barcha yangi anketalar direktorga boradi."
+        else "🚀 <b>ISHLAB CHIQARISH rejimi yoqildi.</b>\n\n"
+        "Endi barcha yangi anketalar direktorga ham, sizga ham boradi."
     )
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML)
@@ -810,16 +902,41 @@ async def handle_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("⛔️ Bu tugma faqat rahbariyat uchun.", show_alert=True)
         return
 
-    await query.answer()
-
     if query.data == "done":
+        await query.answer()
         return
 
     try:
-        action, user_id = query.data.split("_", 1)
-        user_id = int(user_id)
+        action, user_id_str = query.data.split("_", 1)
+        user_id = int(user_id_str)
     except (ValueError, AttributeError):
+        await query.answer()
         return
+
+    # 🔒 Direktor ham, dasturchi ham bir xil tugmani ko'radi.
+    # Shuning uchun nomzodga IKKI MARTA xabar ketmasligini ta'minlaymiz.
+    decided = context.bot_data.setdefault("decided_candidates", {})
+    prev = decided.get(user_id_str)
+    if prev:
+        label = "QABUL QILINGAN ✅" if prev == "accept" else "RAD ETILDI ❌"
+        who = decided.get(f"{user_id_str}_by", "")
+        await query.answer(
+            f"⚠️ Bu nomzod bo'yicha qaror allaqachon qabul qilingan: {label}"
+            + (f"\n({who})" if who else ""),
+            show_alert=True,
+        )
+        try:
+            emoji = "🟢" if prev == "accept" else "🔴"
+            await query.edit_message_reply_markup(
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton(f"{emoji} {label}", callback_data="done")]]
+                )
+            )
+        except Exception:
+            pass
+        return
+
+    await query.answer()
 
     if action == "accept":
         new_keyboard = [[InlineKeyboardButton("🟢 QABUL QILINGAN ✅", callback_data="done")]]
@@ -837,6 +954,11 @@ async def handle_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         return
+
+    decided[user_id_str] = action
+    decided[f"{user_id_str}_by"] = (
+        "Direktor" if query.from_user.id == ADMIN_ID else "Dasturchi"
+    )
 
     try:
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(new_keyboard))
@@ -1039,13 +1161,6 @@ async def get_store_duties(update, context):
     )
 
 
-def _is_yes(text: str) -> bool:
-    t = (text or "").strip().lower()
-    if t.startswith(("yo'q", "yoq", "yo`q", "yo‘q", "нет")):
-        return False
-    return bool(re.match(r"^(ha|xa|да|yes)\b", t)) or t in ("ha", "xa")
-
-
 async def get_marital_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if not text:
@@ -1130,6 +1245,11 @@ async def get_health(update, context):
 # ==========================================================================
 #  YAKUNIY BOSQICH
 # ==========================================================================
+def _age_suffix(birthdate_text) -> str:
+    age = get_age(birthdate_text or "")
+    return f"  (<b>{age} yosh</b>)" if age is not None else ""
+
+
 def build_summary(d: dict) -> str:
     return (
         "📥 <b>ZIYNAT DO'KONI — YANGI NOMZOD ANKETASI</b>\n"
@@ -1137,7 +1257,8 @@ def build_summary(d: dict) -> str:
         "📌 <b>1. SHAXSIY MA'LUMOTLAR:</b>\n"
         f"🎯 <b>Lavozim:</b> {esc(d.get('position'))}\n"
         f"👤 <b>F.I.Sh:</b> {esc(d.get('fullname'))}\n"
-        f"🎂 <b>Tug'ilgan sanasi:</b> {esc(d.get('birthdate'))}\n"
+        f"🎂 <b>Tug'ilgan sanasi:</b> {esc(d.get('birthdate'))}"
+        f"{_age_suffix(d.get('birthdate'))}\n"
         f"🇺🇿 <b>Millati:</b> {esc(d.get('nationality'))}\n"
         f"🏠 <b>Manzil:</b> {esc(d.get('address'))} ({esc(d.get('housing'))})\n"
         f"📞 <b>Tel:</b> {esc(d.get('phone'))}\n\n"
@@ -1208,60 +1329,64 @@ async def get_additional(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     )
 
-    recipient_id = get_recipient_id()
+    # 👨‍💻 Rejimga qarab qabul qiluvchilar:
+    #    test       -> faqat dasturchi
+    #    production -> direktor + dasturchi
+    recipients = get_recipients()
     test_prefix = (
         "🧪 <b>[TEST REJIMI — direktorga yuborilmadi]</b>\n\n"
-        if recipient_id == DEVELOPER_ID
+        if load_mode() == "test"
         else ""
     )
+    contact = f"@{username}" if username else f"ID: {user_id}"
 
-    # --- 1) Rasm (alohida try) --------------------------------------------
-    try:
-        photo = data.get("photo")
-        if photo:
-            contact = f"@{username}" if username else f"ID: {user_id}"
-            caption = (
-                f"{test_prefix}"
-                f"📥 <b>YANGI NOMZOD:</b> {esc(data.get('fullname'))}\n"
-                f"🎯 <b>Lavozim:</b> {esc(data.get('position'))}\n"
-                f"💬 <b>Telegram:</b> {esc(contact)}"
-            )
-            await context.bot.send_photo(
-                chat_id=recipient_id,
-                photo=photo,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-            )
-    except Exception as e:
-        logger.error("Rasm yuborilmadi: %s", e)
-
-    # --- 2) Anketa matni (alohida try) ------------------------------------
-    try:
-        await send_long(context.bot, recipient_id, test_prefix + summary_text)
-    except Exception as e:
-        logger.error("Anketa yuborilmadi: %s", e)
-
-    # --- 3) AI tahlil + tugmalar (alohida try) ----------------------------
-    try:
-        ok = await send_long(
-            context.bot, recipient_id, ai_report_text, reply_markup=decision_keyboard
-        )
-        if not ok:
-            await context.bot.send_message(
-                chat_id=recipient_id,
-                text="⚠️ AI tahlilini yuborishda muammo bo'ldi. Qaror qabul qilish tugmalari:",
-                reply_markup=decision_keyboard,
-            )
-    except Exception as e:
-        logger.error("AI tahlili yuborilmadi: %s", e)
+    for recipient_id in recipients:
+        # --- 1) Rasm (alohida try) ----------------------------------------
         try:
-            await context.bot.send_message(
-                chat_id=recipient_id,
-                text="⚠️ AI tahlili yuborilmadi. Qaror qabul qilish tugmalari:",
-                reply_markup=decision_keyboard,
+            photo = data.get("photo")
+            if photo:
+                caption = (
+                    f"{test_prefix}"
+                    f"📥 <b>YANGI NOMZOD:</b> {esc(data.get('fullname'))}\n"
+                    f"🎯 <b>Lavozim:</b> {esc(data.get('position'))}\n"
+                    f"💬 <b>Telegram:</b> {esc(contact)}"
+                )
+                await context.bot.send_photo(
+                    chat_id=recipient_id,
+                    photo=photo,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                )
+        except Exception as e:
+            logger.error("Rasm yuborilmadi (%s): %s", recipient_id, e)
+
+        # --- 2) Anketa matni (alohida try) --------------------------------
+        try:
+            await send_long(context.bot, recipient_id, test_prefix + summary_text)
+        except Exception as e:
+            logger.error("Anketa yuborilmadi (%s): %s", recipient_id, e)
+
+        # --- 3) AI tahlil + tugmalar (alohida try) ------------------------
+        try:
+            ok = await send_long(
+                context.bot, recipient_id, ai_report_text, reply_markup=decision_keyboard
             )
-        except Exception:
-            pass
+            if not ok:
+                await context.bot.send_message(
+                    chat_id=recipient_id,
+                    text="⚠️ AI tahlilini yuborishda muammo bo'ldi. Qaror qabul qilish tugmalari:",
+                    reply_markup=decision_keyboard,
+                )
+        except Exception as e:
+            logger.error("AI tahlili yuborilmadi (%s): %s", recipient_id, e)
+            try:
+                await context.bot.send_message(
+                    chat_id=recipient_id,
+                    text="⚠️ AI tahlili yuborilmadi. Qaror qabul qilish tugmalari:",
+                    reply_markup=decision_keyboard,
+                )
+            except Exception:
+                pass
 
     context.user_data.clear()
     return ConversationHandler.END
